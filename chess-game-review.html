@@ -1,0 +1,1207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Game Review — Paste Any PGN</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#17140f">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,500&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<style>
+  :root{
+    --bg: #17140f; --bg-2: #1f1a12;
+    --paper: #ece5d3; --paper-2: #e2d9c2;
+    --ink: #221c14; --ink-soft: #52493a;
+    --board-dark: #6b4a34; --board-light: #e8d6ae;
+    --brass: #c9a227; --brass-soft: #a9862a;
+    --oxblood: #9c3b2e; --sage: #4b7a5b;
+    --rule: rgba(236,229,211,0.14);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background: radial-gradient(ellipse at 50% -10%, #241e15 0%, var(--bg) 55%), var(--bg);
+    color: var(--paper); font-family:'Inter',sans-serif; -webkit-font-smoothing:antialiased;
+    padding: 20px 14px 56px;
+  }
+  .wrap{max-width:520px; margin:0 auto;}
+  header{margin-bottom:12px;}
+  .eyebrow{
+    font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color: var(--brass); margin-bottom:6px; display:flex; align-items:center; gap:8px;
+  }
+  .eyebrow::before{content:""; width:16px; height:1px; background:var(--brass); display:inline-block;}
+  h1{font-family:'Source Serif 4', serif; font-weight:600; font-style:italic; font-size:26px; line-height:1.15; margin:0 0 4px; color:#f5efe0;}
+  .subline{font-size:13px; color:#a99f8c; font-family:'IBM Plex Mono',monospace;}
+
+  #setupScreen{}
+  textarea#pgnInput{
+    width:100%; min-height:180px; margin-top:16px; padding:12px; border-radius:8px;
+    background:var(--paper); color:var(--ink); border:none; font-family:'IBM Plex Mono',monospace;
+    font-size:13px; line-height:1.5; resize:vertical;
+  }
+  .setup-row{display:flex; align-items:center; gap:10px; margin-top:12px; flex-wrap:wrap;}
+  select#depthSelect{
+    font-family:'IBM Plex Mono',monospace; font-size:12px; background:var(--bg-2); color:var(--paper);
+    border:1px solid rgba(236,229,211,0.25); border-radius:6px; padding:7px 9px;
+  }
+  button.primary-btn{
+    background:var(--brass); color:#221c14; border:none; border-radius:8px; padding:12px 20px;
+    font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:14px; cursor:pointer;
+  }
+  button.primary-btn:disabled{opacity:.5; cursor:default;}
+  .setup-note{font-size:12.5px; color:#a99f8c; line-height:1.6; margin-top:14px;}
+  .setup-error{
+    margin-top:12px; padding:10px 12px; background:rgba(156,59,46,0.15); border:1px solid var(--oxblood);
+    border-radius:6px; font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:#f0b8ae; display:none;
+  }
+
+  #progressScreen{display:none; text-align:center; padding-top:40px;}
+  .progress-track{
+    width:100%; height:10px; background:var(--bg-2); border-radius:5px; overflow:hidden; margin:18px 0 10px;
+    border:1px solid rgba(236,229,211,0.15);
+  }
+  .progress-fill{height:100%; background:var(--brass); width:0%; transition:width .2s ease;}
+  .progress-label{font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:#a99f8c;}
+
+  .board-row{display:flex; gap:10px; align-items:stretch; margin:12px auto 0; width:100%; max-width:296px;}
+  .evalbar-wrap{width:22px; border-radius:4px; overflow:hidden; flex-shrink:0; border:1px solid rgba(236,229,211,0.25); display:flex; flex-direction:column; position:relative; background:var(--ink);}
+  .evalbar-black{background:#1a1610; flex-shrink:0;} .evalbar-white{background:linear-gradient(180deg,#f7f0dd,#e6d9b8); flex-shrink:0;}
+  .board-col{flex:1 1 auto; min-width:0;}
+  .board-square-outer{position:relative; width:100%; aspect-ratio:1/1; margin:0 auto; border-radius:6px; overflow:hidden; container-type:inline-size; box-shadow:0 10px 30px -8px rgba(0,0,0,.6), 0 0 0 1px rgba(236,229,211,.18);}
+  .board-grid{position:absolute; inset:0; display:grid; grid-template-columns:repeat(8,1fr); grid-template-rows:repeat(8,1fr);}
+  .sq{position:relative; display:flex; align-items:center; justify-content:center;}
+  .sq.light{background:var(--board-light);} .sq.dark{background:var(--board-dark);}
+  .sq .coord{position:absolute; font-family:'IBM Plex Mono',monospace; font-size:8.5px; font-weight:600; opacity:.55; top:2px; left:3px;}
+  .sq.light .coord{color:var(--board-dark);} .sq.dark .coord{color:var(--board-light);}
+  .piece{font-size:10.5cqw; line-height:1; user-select:none;}
+  .piece.pw{color:#f7f1e1; text-shadow:0 1px 0 #1c1710,0 -1px 0 #1c1710,1px 0 0 #1c1710,-1px 0 0 #1c1710,0 2px 3px rgba(0,0,0,.5);}
+  .piece.pb{color:#211a12; text-shadow:0 1px 1px rgba(0,0,0,.35);}
+  svg.arrows{position:absolute; inset:0; width:100%; height:100%; pointer-events:none;}
+  .files-row{display:grid; grid-template-columns:repeat(8,1fr); margin-top:4px;}
+  .files-row span{text-align:center; font-family:'IBM Plex Mono',monospace; font-size:10px; color:#8b8171;}
+  .preview-bar{margin-top:8px; padding:8px 10px; background:var(--bg-2); border:1px solid rgba(201,162,39,0.4); border-radius:6px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;}
+  .preview-label{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--brass); font-weight:600;}
+  .preview-controls{display:flex; align-items:center; gap:6px;}
+  .preview-btn{background:var(--paper); color:var(--ink); border:none; border-radius:4px; padding:4px 10px; font-family:'IBM Plex Mono',monospace; font-weight:700; cursor:pointer; font-size:13px;}
+  .preview-btn:disabled{opacity:.4; cursor:default;}
+  .preview-step{font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:#a99f8c; min-width:36px; text-align:center; display:inline-block;}
+  .preview-exit{background:transparent; border:1px solid rgba(236,229,211,0.35); color:var(--paper); border-radius:14px; padding:4px 11px; font-family:'IBM Plex Mono',monospace; font-size:11px; cursor:pointer;}
+  .preview-trigger{display:block; margin-top:5px; font-family:'IBM Plex Mono',monospace; font-size:11px; font-weight:600; background:transparent; border:1px solid var(--brass-soft); color:var(--brass-soft); border-radius:14px; padding:3px 10px; cursor:pointer;}
+  .move-readout{margin-top:12px; display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:40px;}
+  .move-current{display:flex; align-items:center; gap:9px; flex-wrap:wrap;}
+  .move-num{font-family:'IBM Plex Mono',monospace; color:#9a8f79; font-size:14px;}
+  .move-san{font-family:'Source Serif 4',serif; font-weight:600; font-size:22px; color:#f5efe0;}
+  .stamp{font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:16px; padding:2px 7px; border-radius:3px; transform:rotate(-6deg); border:1.5px solid currentColor; display:inline-block;}
+  .stamp.blunder{color:var(--oxblood); border-color:var(--oxblood);} .stamp.mistake{color:#c97a3a; border-color:#c97a3a;} .stamp.inacc{color:var(--brass); border-color:var(--brass);}
+  .why-btn{font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:11.5px; padding:5px 11px; border-radius:14px; cursor:pointer; flex-shrink:0; border:1.5px solid var(--brass-soft); background:transparent; color:var(--brass-soft);}
+  .why-btn.sev-blunder{background:var(--oxblood); border-color:var(--oxblood); color:#f5efe0;} .why-btn.sev-mistake{border-color:#c97a3a; color:#c97a3a;} .why-btn.sev-inaccuracy{border-color:var(--brass); color:var(--brass);} .why-btn.sev-fine{border-color:rgba(236,229,211,0.28); color:#a99f8c;}
+  .why-btn:disabled{opacity:.55; cursor:default;}
+  .best-hint{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--sage);}
+  .controls{display:flex; align-items:center; gap:8px; margin-top:12px;}
+  button.navbtn{background:var(--paper); color:var(--ink); border:none; border-radius:5px; font-family:'IBM Plex Mono',monospace; font-weight:600; font-size:13px; padding:9px 14px; cursor:pointer;}
+  button.navbtn:disabled{opacity:.35; cursor:default;}
+  input[type=range]{flex:1; accent-color:var(--brass);}
+  .chips{display:flex; gap:7px; overflow-x:auto; padding:14px 0 4px; scrollbar-width:none;}
+  .chips::-webkit-scrollbar{display:none;}
+  .chip{flex-shrink:0; font-family:'IBM Plex Mono',monospace; font-size:11.5px; padding:7px 11px; border-radius:20px; border:1px solid rgba(236,229,211,0.3); color:#d8d0bc; cursor:pointer; white-space:nowrap; background:transparent;}
+  .chip.active{background:var(--brass); border-color:var(--brass); color:#221c14; font-weight:600;}
+  .chip.cat-blunder{border-color:rgba(156,59,46,.6);} .chip.cat-blunder.active{background:var(--oxblood); border-color:var(--oxblood); color:#f5efe0;}
+  .panel{background:var(--paper); color:var(--ink); border-radius:8px; padding:16px 17px 17px; margin-top:8px; box-shadow:0 12px 28px -10px rgba(0,0,0,.55);}
+  .panel .kicker{font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-soft); margin-bottom:5px;}
+  .panel h3{font-family:'Source Serif 4',serif; font-size:18px; margin:0 0 8px; font-weight:600;}
+  .panel p{margin:0; font-size:14.5px; line-height:1.55; color:#3a3126;}
+  #explainBox{margin-top:12px;}
+  .explain-btn{font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:600; background:transparent; color:var(--brass-soft); border:1.5px solid var(--brass-soft); border-radius:20px; padding:7px 13px; cursor:pointer;}
+  .explain-btn.sev-blunder{background:var(--oxblood); border-color:var(--oxblood); color:#f5efe0;} .explain-btn.sev-mistake{border-color:#c97a3a; color:#c97a3a;} .explain-btn.sev-inaccuracy{border-color:var(--brass); color:var(--brass);}
+  .explain-tag{display:inline-block; font-family:'IBM Plex Mono',monospace; font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; padding:2px 9px; border-radius:10px; margin-bottom:8px;}
+  .explain-tag.sev-blunder{background:var(--oxblood); color:#f5efe0;} .explain-tag.sev-mistake{background:#c97a3a; color:#221c14;} .explain-tag.sev-inaccuracy{background:var(--brass); color:#221c14;} .explain-tag.sev-fine{background:rgba(58,49,38,0.12); color:var(--ink-soft);}
+  .explain-lines{background:rgba(34,28,20,0.05); border-radius:6px; padding:9px 11px; margin-bottom:2px;}
+  .line-row{display:flex; gap:8px; font-size:12.5px; line-height:1.5; flex-wrap:wrap;} .line-row + .line-row{margin-top:3px;}
+  .line-label{font-family:'IBM Plex Mono',monospace; font-weight:700; color:var(--ink-soft); flex-shrink:0;}
+  .line-moves{font-family:'IBM Plex Mono',monospace; color:#3a3126;}
+  .explain-text{font-size:14px; line-height:1.6; color:#3a3126; margin-top:10px; padding-top:10px; border-top:1px dashed rgba(34,28,20,0.2); white-space:pre-wrap;}
+  .explain-facts{font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--ink-soft); margin-top:8px; line-height:1.6;}
+  .movelist-wrap{margin-top:26px;}
+  .section-title{font-family:'Source Serif 4',serif; font-style:italic; font-size:19px; color:#f5efe0; margin:0 0 12px; padding-bottom:8px; border-bottom:1px solid var(--rule);}
+  .movelist{display:grid; grid-template-columns:26px 1fr 1fr; gap:2px 6px; font-family:'IBM Plex Mono',monospace; font-size:12.5px; background:var(--bg-2); border-radius:8px; padding:10px 8px; border:1px solid rgba(236,229,211,0.12); max-height:260px; overflow-y:auto;}
+  .movelist .mn{color:#8b8171; padding:4px 0;}
+  .mv-cell{padding:4px 6px; border-radius:4px; cursor:pointer; color:#d8d0bc; display:flex; justify-content:space-between;}
+  .mv-cell:hover{background:rgba(201,162,39,0.12);} .mv-cell.active{background:var(--brass); color:#221c14; font-weight:600;}
+  .mv-cell .sym{opacity:.85;} .mv-cell.sym-blunder .sym{color:var(--oxblood); font-weight:700;} .mv-cell.active.sym-blunder .sym{color:#5a0f08;}
+  footer{margin-top:28px; text-align:center; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#6d6455;}
+  #reviewScreen{display:none;}
+  .reset-link{font-family:'IBM Plex Mono',monospace; font-size:11px; color:#a99f8c; background:none; border:none; text-decoration:underline; cursor:pointer; padding:0;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Game Review</div>
+    <h1>Paste any PGN</h1>
+    <div class="subline">Runs a real chess engine (Stockfish, WebAssembly) live in your browser — fully offline, no account needed</div>
+  </header>
+
+  <div id="setupScreen">
+    <textarea id="pgnInput" placeholder="Paste a PGN here, e.g.
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 ..."></textarea>
+    <div class="setup-row">
+      <label style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#a99f8c;">You played:</label>
+      <select id="colorSelect">
+        <option value="w">White</option>
+        <option value="b">Black</option>
+      </select>
+    </div>
+    <div class="setup-row">
+      <label style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#a99f8c;">Engine depth:</label>
+      <select id="depthSelect">
+        <option value="8">8 (fastest)</option>
+        <option value="10" selected>10 (balanced)</option>
+        <option value="12">12 (stronger, slower)</option>
+      </select>
+    </div>
+    <div class="setup-row">
+      <button class="primary-btn" id="analyzeBtn">Analyze Game</button>
+    </div>
+    <div class="setup-error" id="setupError"></div>
+    <div class="setup-note">
+      This loads a ~7MB chess engine and analyzes every move in your browser — it can take anywhere from
+      30 seconds to a few minutes depending on game length, engine depth, and your device. Depth 10 is a
+      good starting point; drop to 8 on an older phone if it's slow. Explanations for "Why?" are generated
+      locally from verified engine facts — no network call, works offline once the engine's cached.
+      This review is built around <em>your</em> moves: your own moves are scored normally against the
+      engine's best, but your opponent's moves are only flagged when they created a chance you didn't take,
+      or a threat you didn't answer, within your next 1-3 moves. The board orientation follows the colour
+      you select above.
+    </div>
+  </div>
+
+  <div id="progressScreen">
+    <div class="progress-label" id="progressLabel">Loading engine…</div>
+    <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-label" id="progressDetail" style="color:#6d6455;"></div>
+  </div>
+
+  <div id="reviewScreen">
+    <header style="margin-top:0;">
+      <div class="eyebrow" id="reviewEyebrow">Game Review</div>
+      <h1 id="reviewTitle">Game</h1>
+      <div class="subline" id="reviewSubline"></div>
+      <button class="reset-link" id="resetBtn" style="margin-top:8px;">&larr; analyze a different game</button>
+    </header>
+
+    <div class="board-row">
+      <div class="evalbar-wrap" id="evalbarWrap">
+        <div class="evalbar-black" id="evalBlack" style="height:50%"></div>
+        <div class="evalbar-white" id="evalWhite" style="height:50%"></div>
+      </div>
+      <div class="board-col">
+        <div class="board-square-outer">
+          <div class="board-grid" id="boardGrid"></div>
+          <svg class="arrows" id="arrowSvg" viewBox="0 0 8 8">
+            <defs>
+              <marker id="arrowhead-played" markerWidth="3" markerHeight="3" refX="1.5" refY="1.5" orient="auto"><path d="M0,0 L3,1.5 L0,3 Z" fill="#9c3b2e"/></marker>
+              <marker id="arrowhead-best" markerWidth="3" markerHeight="3" refX="1.5" refY="1.5" orient="auto"><path d="M0,0 L3,1.5 L0,3 Z" fill="#4b7a5b"/></marker>
+            </defs>
+          </svg>
+        </div>
+        <div class="files-row" id="filesRow"><span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span><span>h</span></div>
+      </div>
+    </div>
+
+    <div class="preview-bar" id="previewBar" style="display:none;">
+      <span class="preview-label" id="previewLabel"></span>
+      <div class="preview-controls">
+        <button class="preview-btn" id="prevStepBtn">◀</button>
+        <span class="preview-step" id="previewStepLabel"></span>
+        <button class="preview-btn" id="nextStepBtn">▶</button>
+        <button class="preview-exit" id="exitPreviewBtn">Exit</button>
+      </div>
+    </div>
+
+    <div class="move-readout">
+      <div class="move-current">
+        <span class="move-num" id="moveNum">start</span>
+        <span class="move-san" id="moveSan">Starting position</span>
+        <span class="stamp" id="stamp" style="display:none;"></span>
+        <button class="why-btn" id="whyBtnTop" style="display:none;">Why?</button>
+      </div>
+    </div>
+    <div class="best-hint" id="bestHint" style="min-height:16px;"></div>
+
+    <div class="controls">
+      <button class="navbtn" id="btnFirst">|◀</button>
+      <button class="navbtn" id="btnPrev">◀ Prev</button>
+      <input type="range" id="slider" min="0" max="1" value="0">
+      <button class="navbtn" id="btnNext">Next ▶</button>
+      <button class="navbtn" id="btnLast">▶|</button>
+    </div>
+
+    <div class="chips" id="chips"></div>
+
+    <div class="panel">
+      <div class="kicker" id="panelKicker">Position</div>
+      <h3 id="panelTitle">Starting position</h3>
+      <p id="panelNote"></p>
+      <div id="explainBox" style="display:none;"></div>
+    </div>
+
+    <div class="movelist-wrap">
+      <div class="section-title">Full move list</div>
+      <div class="movelist" id="movelist"></div>
+    </div>
+
+    <footer>Analysis by Stockfish (WASM) · explanations generated locally · runs entirely in your browser, no server</footer>
+  </div>
+</div>
+
+<script>
+class UciEngine {
+  constructor(){ this.ready=false; this.queue=[]; this.busy=false; this.worker=null; }
+
+  init(){
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const engineUrl = 'https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.wasm.js';
+      const attempts = [];
+
+      const tryDirect = () => {
+        try{ this.worker = new Worker(engineUrl); return true; }
+        catch(e){ attempts.push('direct cross-origin: ' + e.message); return false; }
+      };
+      const tryBlob = () => {
+        try{
+          const bootstrap = "importScripts('" + engineUrl + "');";
+          const blob = new Blob([bootstrap], {type:'application/javascript'});
+          this.worker = new Worker(URL.createObjectURL(blob));
+          return true;
+        } catch(e){ attempts.push('blob wrapper: ' + e.message); return false; }
+      };
+
+      const wireUp = () => {
+        const onMsg = (e) => {
+          const line = typeof e.data === 'string' ? e.data : '';
+          if(line === 'uciok'){ this.worker.postMessage('isready'); }
+          else if(line === 'readyok'){
+            this.ready = true;
+            this.worker.removeEventListener('message', onMsg);
+            if(!settled){ settled = true; resolve(); }
+          }
+        };
+        this.worker.addEventListener('message', onMsg);
+        this.worker.onerror = (e) => {
+          attempts.push('runtime error: ' + (e.message || 'unknown'));
+          if(!settled){ settled = true; reject(new Error(attempts.join(' | '))); }
+        };
+        this.worker.postMessage('uci');
+        setTimeout(()=>{ if(!settled){ settled = true; reject(new Error('Engine load timed out. Attempts: ' + attempts.join(' | '))); } }, 25000);
+      };
+
+      if(tryDirect()){ wireUp(); }
+      else if(tryBlob()){ wireUp(); }
+      else { reject(new Error('Both loading methods failed: ' + attempts.join(' | '))); }
+    });
+  }
+
+  analyse(fen, depth){
+    return new Promise((resolve, reject) => {
+      this.queue.push({fen, depth, resolve, reject});
+      this._pump();
+    });
+  }
+
+  _pump(){
+    if(this.busy || this.queue.length===0) return;
+    this.busy = true;
+    const {fen, depth, resolve} = this.queue.shift();
+    let lastScore = null, lastPv = [];
+    const onMsg = (e) => {
+      const line = typeof e.data === 'string' ? e.data : '';
+      if(line.indexOf('info') === 0 && line.indexOf(' pv ') !== -1){
+        const sm = line.match(/score (cp|mate) (-?\d+)/);
+        const pm = line.match(/ pv (.+)$/);
+        if(sm) lastScore = { kind: sm[1], val: parseInt(sm[2],10) };
+        if(pm) lastPv = pm[1].trim().split(' ');
+      } else if(line.indexOf('bestmove') === 0){
+        this.worker.removeEventListener('message', onMsg);
+        this.busy = false;
+        resolve({ score: lastScore, pv: lastPv });
+        this._pump();
+      }
+    };
+    this.worker.addEventListener('message', onMsg);
+    this.worker.postMessage('position fen ' + fen);
+    this.worker.postMessage('go depth ' + depth);
+  }
+}
+
+function scoreToCpWhite(score, sideToMoveIsWhite){
+  if(!score) return 0;
+  let cp;
+  if(score.kind === 'mate'){
+    const m = score.val;
+    cp = m > 0 ? (100000 - Math.abs(m)*100) : (-100000 + Math.abs(m)*100);
+  } else {
+    cp = score.val;
+  }
+  return sideToMoveIsWhite ? cp : -cp;
+}
+
+function rcToSquare(file, rank){ return String.fromCharCode(97+file) + rank; }
+
+function boardArrFromChess(chess){
+  return chess.board().map(row => row.map(cell => cell ? (cell.color==='w' ? cell.type.toUpperCase() : cell.type) : ''));
+}
+
+function getAttackers(boardArr, targetFile, targetRank, byColor){
+  const attackers = [];
+  const bishopDirs=[[1,1],[1,-1],[-1,1],[-1,-1]], rookDirs=[[1,0],[-1,0],[0,1],[0,-1]];
+  const queenDirs = bishopDirs.concat(rookDirs);
+  const knightDeltas=[[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]];
+  for(let f=0; f<8; f++){
+    for(let r=1; r<=8; r++){
+      if(f===targetFile && r===targetRank) continue;
+      const cell = boardArr[8-r][f];
+      if(!cell) continue;
+      const isWhite = cell === cell.toUpperCase();
+      if((isWhite?'w':'b') !== byColor) continue;
+      const type = cell.toLowerCase();
+      const df = targetFile-f, dr = targetRank-r;
+      if(type==='p'){
+        const dir = isWhite ? 1 : -1;
+        if(dr===dir && Math.abs(df)===1) attackers.push(rcToSquare(f,r));
+      } else if(type==='n'){
+        if(knightDeltas.some(([a,b])=>a===df&&b===dr)) attackers.push(rcToSquare(f,r));
+      } else if(type==='k'){
+        if(Math.abs(df)<=1 && Math.abs(dr)<=1) attackers.push(rcToSquare(f,r));
+      } else {
+        const dirs = type==='b'?bishopDirs:type==='r'?rookDirs:type==='q'?queenDirs:[];
+        for(const [dx,dy] of dirs){
+          let x=f+dx, y=r+dy;
+          while(x>=0 && x<8 && y>=1 && y<=8){
+            if(x===targetFile && y===targetRank){ attackers.push(rcToSquare(f,r)); break; }
+            if(boardArr[8-y][x]) break;
+            x+=dx; y+=dy;
+          }
+        }
+      }
+    }
+  }
+  return attackers;
+}
+
+function legalCapturers(fen, targetSquare, byColor){
+  const parts = fen.split(' ');
+  parts[1] = byColor; parts[3] = '-';
+  let c;
+  try{ c = new Chess(parts.join(' ')); } catch(e){ return []; }
+  return c.moves({verbose:true}).filter(m=>m.to===targetSquare).map(m=>m.from);
+}
+
+const PIECE_NAMES = {p:'pawn',n:'knight',b:'bishop',r:'rook',q:'queen',k:'king'};
+const PIECE_VALUE = {p:1,n:3,b:3,r:5,q:9,k:0};
+
+function materialFactsStructured(fen){
+  const c = new Chess(fen);
+  const boardArr = boardArrFromChess(c);
+  const facts = [];
+  for(let row=0; row<8; row++){
+    for(let col=0; col<8; col++){
+      const cell = boardArr[row][col];
+      if(!cell) continue;
+      const type = cell.toLowerCase();
+      if(type==='k') continue;
+      const isWhite = cell===cell.toUpperCase();
+      const color = isWhite?'w':'b', opp = isWhite?'b':'w';
+      const file=col, rank=8-row;
+      const sq = rcToSquare(file,rank);
+      const rawAttackers = legalCapturers(fen, sq, opp);
+      if(rawAttackers.length===0) continue;
+      const defenders = getAttackers(boardArr, file, rank, color);
+      facts.push({
+        color: isWhite?'White':'Black',
+        colorCode: isWhite?'w':'b',
+        piece: type,
+        pieceName: PIECE_NAMES[type],
+        value: PIECE_VALUE[type],
+        square: sq,
+        attackers: rawAttackers.map(s=>{ const p=c.get(s); return {square:s, piece:p.type, pieceName:PIECE_NAMES[p.type]}; }),
+        defenders: defenders.map(s=>{ const p=c.get(s); return {square:s, piece:p.type, pieceName:PIECE_NAMES[p.type]}; }),
+        undefended: defenders.length===0
+      });
+    }
+  }
+  return facts;
+}
+
+function materialFacts(fen){
+  return materialFactsStructured(fen).map(f=>{
+    const attTxt = f.attackers.map(a=>a.pieceName+' on '+a.square);
+    const defTxt = f.defenders.map(d=>d.pieceName+' on '+d.square);
+    const status = f.undefended ? 'UNDEFENDED' : 'DEFENDED';
+    return f.color+' '+f.pieceName+' on '+f.square+' is attacked by ['+attTxt.join(', ')+'] and defended by ['+(defTxt.length?defTxt.join(', '):'nothing')+'] -> '+status;
+  });
+}
+
+async function simulateLine(fen, pvUci, engine, evalDepth, maxPlies){
+  maxPlies = maxPlies || 14;
+  const c = new Chess(fen);
+  const sans = [], steps = [];
+  let prevCp = null, quietCount = 0;
+  for(let i=0; i<Math.min(maxPlies, pvUci.length); i++){
+    const uci = pvUci[i];
+    const from = uci.slice(0,2), to = uci.slice(2,4), promo = uci.slice(4,5) || undefined;
+    const moveObj = c.move({from, to, promotion: promo});
+    if(!moveObj) break;
+    const isCapture = !!moveObj.captured;
+    sans.push(moveObj.san);
+    const givesCheck = c.in_check();
+    steps.push({ san: moveObj.san, uci: uci, board: boardArrFromChess(c), captured: moveObj.captured || null, capturedBy: moveObj.piece });
+    const info = await engine.analyse(c.fen(), evalDepth);
+    const cp = scoreToCpWhite(info.score, c.turn()==='w');
+    const stable = prevCp !== null && Math.abs(cp-prevCp) < 25;
+    if(stable && !isCapture && !givesCheck){
+      quietCount++;
+      if(quietCount>=2) break;
+    } else { quietCount = 0; }
+    prevCp = cp;
+  }
+  return { sans, steps, facts: materialFacts(c.fen()), factsStructured: materialFactsStructured(c.fen()) };
+}
+
+let GAME_DATA = [];
+let engine = null;
+
+function symbolFor(loss){
+  if(loss<=20) return '';
+  if(loss<=60) return '?!';
+  if(loss<=150) return '?';
+  return '??';
+}
+function clampCp(v){ return Math.max(-1500, Math.min(1500, v)); }
+
+async function runQuickPass(pgnText, depth, onProgress){
+  const parser = new Chess();
+  const ok = parser.load_pgn(pgnText, {sloppy:true});
+  if(!ok || parser.history().length===0) throw new Error('Could not parse that PGN — check the move list is valid.');
+  const moves = parser.history({verbose:true});
+
+  const replay = new Chess();
+  const plies = [{
+    ply:0, moveNumber:0, side:null, san:null, uci:null,
+    board: boardArrFromChess(replay), cpWhite: 20, bestSan:null, bestUci:null,
+    isCheck:false, isMate:false
+  }];
+
+  let prevCpWhite = 20;
+  for(let i=0; i<moves.length; i++){
+    onProgress(i, moves.length);
+    const mv = moves[i];
+    const fenBefore = replay.fen();
+    const infoBefore = await engine.analyse(fenBefore, depth);
+    const sideWhite = replay.turn()==='w';
+    const bestUci = infoBefore.pv[0] || null;
+    let bestSan = null;
+    if(bestUci){
+      const tmp = new Chess(fenBefore);
+      const bm = tmp.move({from:bestUci.slice(0,2), to:bestUci.slice(2,4), promotion:bestUci.slice(4,5)||undefined});
+      bestSan = bm ? bm.san : null;
+    }
+
+    const played = replay.move({from:mv.from, to:mv.to, promotion:mv.promotion});
+    const moveNumber = Math.ceil((i+1)/2);
+
+    const infoAfter = await engine.analyse(replay.fen(), Math.min(depth, 10));
+    const cpWhite = scoreToCpWhite(infoAfter.score, replay.turn()==='w');
+    const loss = sideWhite ? (prevCpWhite - cpWhite) : (cpWhite - prevCpWhite);
+    prevCpWhite = cpWhite;
+
+    plies.push({
+      ply: i+1, moveNumber, side: sideWhite?'w':'b', san: played.san, uci: mv.from+mv.to,
+      fenBefore, boardBefore: boardArrFromChess(new Chess(fenBefore)),
+      board: boardArrFromChess(replay), cpWhite,
+      bestSan, bestUci, symbol: symbolFor(clampCp(loss) < 0 ? 0 : clampCp(loss)),
+      isCheck: replay.in_check(), isMate: replay.in_checkmate(),
+      keyMoment:false,
+      bestLineSan:null, bestLineSteps:null, materialFactsAfterBestLine:null, materialFactsAfterBestLineStructured:null,
+      playedLineSan:null, playedLineSteps:null, materialFactsAfterPlayedLine:null, materialFactsAfterPlayedLineStructured:null,
+      materialFacts:null, materialFactsStructured:null, lineComputed:false,
+      capturedByPlayedMove: played.captured || null
+    });
+  }
+  onProgress(moves.length, moves.length);
+  return plies;
+}
+
+/* ---------------------------------------------------------------------
+   OPPONENT-MOMENT DETECTION
+   Opponent moves are not scored against "best move" like your own are.
+   Instead: after each opponent ply, check whether it created a genuine
+   swing (an opportunity for you, or a threat against you). Then look at
+   YOUR next 1-3 replies to see whether you capitalised on the opportunity
+   or defended the threat. Only flag the opponent's move if you didn't —
+   a "normal" opponent move that doesn't set up something you missed is
+   left alone entirely.
+--------------------------------------------------------------------- */
+const OPPONENT_SWING_THRESHOLD_CP = 100; // meaningful swing, in centipawns, from your perspective
+const YOUR_REPLY_WINDOW = 3; // check up to this many of YOUR replies after their move
+
+function cpFromYourPerspective(cpWhite, yourColor){
+  return yourColor === 'w' ? cpWhite : -cpWhite;
+}
+
+async function annotateOpponentMoments(plies, depth, onProgress){
+  const yourColor = YOUR_COLOR;
+  const oppColor = yourColor === 'w' ? 'b' : 'w';
+  const oppPlies = plies.filter(p => p.ply > 0 && p.side === oppColor);
+  let done = 0;
+
+  for(const oppPly of oppPlies){
+    done++; onProgress(done, oppPlies.length);
+
+    const idx = oppPly.ply;
+    const before = plies[idx-1]; // position/eval just before opponent's move
+    const cpBeforeYou = cpFromYourPerspective(before.cpWhite, yourColor);
+    const cpAfterYou = cpFromYourPerspective(oppPly.cpWhite, yourColor);
+    const swing = cpAfterYou - cpBeforeYou; // positive = swung in your favour, negative = swung against you
+
+    if(Math.abs(swing) < OPPONENT_SWING_THRESHOLD_CP){
+      oppPly.opponentMoment = null; // no meaningful swing — nothing to flag, ever
+      continue;
+    }
+
+    const isOpportunity = swing > 0; // their move handed you something
+    const isThreat = swing < 0;      // their move created danger for you
+
+    // Collect your next up-to-3 replies after this opponent move.
+    const yourReplies = [];
+    let cursor = idx + 1;
+    while(cursor < plies.length && yourReplies.length < YOUR_REPLY_WINDOW){
+      if(plies[cursor].side === yourColor) yourReplies.push(plies[cursor]);
+      else break; // reached another opponent move without enough of your replies — window ends naturally
+      cursor++;
+    }
+
+    if(yourReplies.length === 0){
+      oppPly.opponentMoment = null; // game ended right after their move — nothing to evaluate
+      continue;
+    }
+
+    // Did you actually address it? Compare the eval right after your reply-window
+    // against the peak swing — if you clawed back most of an opportunity/threat,
+    // treat it as handled. Anything still mostly unaddressed after your replies gets flagged.
+    const lastReply = yourReplies[yourReplies.length-1];
+    const cpAfterYourReplies = cpFromYourPerspective(lastReply.cpWhite, yourColor);
+
+    let handled;
+    if(isOpportunity){
+      // You "took it" if the advantage roughly held or grew across your replies.
+      handled = (cpAfterYourReplies - cpBeforeYou) >= (swing * 0.6);
+    } else {
+      // You "defended it" if you clawed back most of the threat.
+      handled = (cpAfterYourReplies - cpBeforeYou) >= (swing * 0.4); // swing is negative here, so this checks you didn't let it get much worse
+    }
+
+    if(handled){
+      oppPly.opponentMoment = null;
+    } else {
+      oppPly.opponentMoment = {
+        type: isOpportunity ? 'missed-opportunity' : 'missed-defense',
+        swingCp: swing,
+        replyMoves: yourReplies.map(r=>r.san),
+        replyPlies: yourReplies.map(r=>r.ply)
+      };
+      oppPly.keyMoment = true; // surfaces in chips/movelist alongside your own blunders
+    }
+  }
+}
+
+async function ensureDeepData(p, depth){
+  if(p.lineComputed) return;
+  p.materialFacts = materialFacts(p.fenBefore);
+  p.materialFactsStructured = materialFactsStructured(p.fenBefore);
+  const infoBefore = await engine.analyse(p.fenBefore, depth);
+  if(infoBefore.pv && infoBefore.pv.length){
+    const bl = await simulateLine(p.fenBefore, infoBefore.pv, engine, Math.min(depth,10));
+    p.bestLineSan = bl.sans; p.bestLineSteps = bl.steps; p.materialFactsAfterBestLine = bl.facts; p.materialFactsAfterBestLineStructured = bl.factsStructured;
+  } else { p.bestLineSan=[]; p.bestLineSteps=[]; p.materialFactsAfterBestLine=[]; p.materialFactsAfterBestLineStructured=[]; }
+
+  const c2 = new Chess(p.fenBefore);
+  c2.move({from:p.uci.slice(0,2), to:p.uci.slice(2,4), promotion:p.uci.slice(4,5)||undefined});
+  const infoAfterPlayed = await engine.analyse(c2.fen(), depth);
+  if(infoAfterPlayed.pv && infoAfterPlayed.pv.length){
+    const pl = await simulateLine(c2.fen(), infoAfterPlayed.pv, engine, Math.min(depth,10));
+    p.playedLineSan = pl.sans; p.playedLineSteps = pl.steps; p.materialFactsAfterPlayedLine = pl.facts; p.materialFactsAfterPlayedLineStructured = pl.factsStructured;
+  } else { p.playedLineSan=[]; p.playedLineSteps=[]; p.materialFactsAfterPlayedLine=[]; p.materialFactsAfterPlayedLineStructured=[]; }
+  p.lineComputed = true;
+}
+
+/* ---------------------------------------------------------------------
+   RULE-BASED EXPLANATION GENERATOR
+   Replaces the old LLM API call. Everything here works off the same
+   verified facts (attacker/defender lists, simulated forced lines)
+   the engine already computes — no network call, works offline.
+   Picks from varied phrasing per situation so it doesn't read like a
+   single fixed template every time.
+--------------------------------------------------------------------- */
+function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+
+function findHangingPiece(factsStructured, sideThatMoved){
+  // A piece of the side that just moved, undefended and attacked -> the clearest "you hung something" story.
+  const own = factsStructured.filter(f => f.colorCode === sideThatMoved && f.undefended && f.attackers.length>0);
+  if(own.length===0) return null;
+  own.sort((a,b)=> b.value - a.value);
+  return own[0];
+}
+
+function findWinningCapture(factsStructured, opponentColor){
+  // An opponent piece attacked and undefended -> "you can just win it".
+  const opp = factsStructured.filter(f => f.colorCode === opponentColor && f.undefended && f.attackers.length>0);
+  if(opp.length===0) return null;
+  opp.sort((a,b)=> b.value - a.value);
+  return opp[0];
+}
+
+function lineWinsMaterial(steps){
+  if(!steps || !steps.length) return null;
+  // sum captured piece values along the line, grouped by which side captured
+  let netForMover = 0;
+  const moverColorFirst = null;
+  let firstCapture = null;
+  steps.forEach(s=>{
+    if(s.captured){
+      if(!firstCapture) firstCapture = s;
+    }
+  });
+  return firstCapture;
+}
+
+function describeTacticFromLine(p, which){
+  const steps = which==='best' ? p.bestLineSteps : p.playedLineSteps;
+  if(!steps || steps.length===0) return null;
+  const cap = lineWinsMaterial(steps);
+  return cap;
+}
+
+function generateOpponentMomentExplanation(p){
+  const om = p.opponentMoment;
+  const yourLabel = YOUR_COLOR==='w' ? 'White' : 'Black';
+  const oppLabel = YOUR_COLOR==='w' ? 'Black' : 'White';
+  const replySeq = (om.replyMoves||[]).join(' ');
+  const swingPawns = Math.abs(om.swingCp/100).toFixed(1);
+
+  if(om.type === 'missed-opportunity'){
+    const templates = [
+      `${p.san} shifted the position roughly ${swingPawns} pawns in your favour — a real chance. Your reply (${replySeq || '—'}) didn't hold onto that swing, so most of it slipped away over the next few moves.`,
+      `After ${p.san}, the position opened up in your favour by about ${swingPawns} pawns' worth of advantage. What followed (${replySeq || '—'}) didn't capitalise on it — worth going back and asking what would have kept that advantage.`,
+      `${p.san} handed ${yourLabel} an opening — roughly ${swingPawns} pawns of swing. Your next moves (${replySeq || '—'}) let it fade rather than pressing it.`
+    ];
+    return pick(templates);
+  } else {
+    const templates = [
+      `${p.san} created real danger — the position swung about ${swingPawns} pawns against you. Your reply (${replySeq || '—'}) didn't fully deal with that threat, and the position stayed worse for it.`,
+      `That move (${p.san}) was a genuine threat, costing roughly ${swingPawns} pawns of evaluation. What followed (${replySeq || '—'}) didn't neutralise it — worth working out what defence was actually needed here.`,
+      `${p.san} put real pressure on — around ${swingPawns} pawns' swing against ${yourLabel}. Your next moves (${replySeq || '—'}) didn't fully answer it.`
+    ];
+    return pick(templates);
+  }
+}
+
+function generateExplanation(p){
+  const isYou = p.side === YOUR_COLOR;
+  if(!isYou && p.opponentMoment) return generateOpponentMomentExplanation(p);
+
+  const sideLabel = p.side==='w' ? 'White' : 'Black';
+  const opp = p.side==='w' ? 'b' : 'w';
+  const oppLabel = p.side==='w' ? 'Black' : 'White';
+
+  // 1) Did the played move hang something the recommended move didn't?
+  const hanging = findHangingPiece(p.materialFactsAfterPlayedLineStructured || [], p.side);
+  if(hanging){
+    const attackerNames = hanging.attackers.map(a=>a.pieceName).join(' or ');
+    const templates = [
+      `This leaves the ${hanging.pieceName} on ${hanging.square} hanging — ${oppLabel}'s ${attackerNames} can simply take it next move, and nothing recaptures. ${p.bestSan} avoided handing over material for free.`,
+      `The problem is the ${hanging.pieceName} on ${hanging.square}: after this it has no defender, so ${oppLabel} just wins it with ${attackerNames}. ${p.bestSan} kept that piece protected.`,
+      `${p.san} walks a ${hanging.pieceName} into an undefended square on ${hanging.square} — ${oppLabel}'s ${attackerNames} picks it up for nothing. That's the concrete cost compared to ${p.bestSan}.`
+    ];
+    return pick(templates);
+  }
+
+  // 2) Does the recommended line win material outright (a capture happens early in engine's best line)?
+  const bestCap = describeTacticFromLine(p, 'best');
+  if(bestCap && bestCap.captured){
+    const wonPiece = PIECE_NAMES[bestCap.captured] || bestCap.captured;
+    const templates = [
+      `${p.bestSan} sets up winning the ${wonPiece} outright — the engine's line runs ${(p.bestLineSan||[]).slice(0,4).join(' ')}, picking up material ${sideLabel} doesn't get back with ${p.san}.`,
+      `The point of ${p.bestSan} is concrete: it leads to winning a ${wonPiece} within a few moves (${(p.bestLineSan||[]).slice(0,4).join(' ')}). ${p.san} doesn't create that same threat.`,
+      `${p.bestSan} forces the win of a ${wonPiece} — follow the line (${(p.bestLineSan||[]).slice(0,4).join(' ')}) and it falls. That tactic isn't available after ${p.san}.`
+    ];
+    return pick(templates);
+  }
+
+  // 3) Was there a winning capture available right now that got missed (board-vision theme)?
+  const missed = findWinningCapture(p.materialFactsStructured || [], opp);
+  if(missed){
+    const attackerNames = missed.attackers.map(a=>a.pieceName).join(' or ');
+    const templates = [
+      `Before this move, ${oppLabel}'s ${missed.pieceName} on ${missed.square} was undefended and attacked by your ${attackerNames} — that piece was there for the taking, and ${p.san} doesn't cash it in.`,
+      `There was a free ${missed.pieceName} on ${missed.square} sitting undefended — your ${attackerNames} could have captured it. ${p.san} misses that chance.`,
+      `The ${missed.pieceName} on ${missed.square} had no defender and was attacked by your ${attackerNames}, meaning it could simply be won. That opportunity isn't there anymore after ${p.san}.`
+    ];
+    return pick(templates);
+  }
+
+  // 4) King safety heuristic: recommended move castles, played move doesn't.
+  if(p.bestSan === 'O-O' || p.bestSan === 'O-O-O'){
+    const templates = [
+      `${p.bestSan} gets the king to safety and connects the rooks — leaving the king in the centre a move longer (as ${p.san} does) keeps it exposed to future checks and attacks.`,
+      `Castling here (${p.bestSan}) is the priority — the king's still uncastled, and ${p.san} doesn't address that, so the exposure carries forward.`,
+      `${p.bestSan} tucks the king away before anything goes wrong. ${p.san} delays that, which is the recurring risk with an uncastled king.`
+    ];
+    return pick(templates);
+  }
+
+  // 5) Early queen move heuristic: recommended move develops a minor piece/pawn, played move is a queen move this early.
+  const c = new Chess(p.fenBefore);
+  const movedPiece = c.get(p.uci.slice(0,2));
+  if(movedPiece && movedPiece.type === 'q' && p.moveNumber <= 10 && p.bestSan && !p.bestSan.startsWith('Q')){
+    const templates = [
+      `${p.san} brings the queen out early, before minor pieces are developed — it can get chased around by pawns and knights, losing tempo. ${p.bestSan} continues development instead.`,
+      `Moving the queen this early (${p.san}) risks it becoming a target while the rest of the army is still at home. ${p.bestSan} focuses on getting pieces out first.`,
+      `${p.bestSan} keeps developing; ${p.san} commits the queen too soon, and early queen sorties are a common way to lose time to attacks on it.`
+    ];
+    return pick(templates);
+  }
+
+  // 6) Fallback — no clean tactical/positional story detected from the templates above.
+  const genericTemplates = [
+    `${p.bestSan} is the engine's preferred move here — the position doesn't reduce to one simple tactical reason from the available facts, but the follow-up (${(p.bestLineSan||[]).slice(0,3).join(' ') || 'engine line'}) keeps more of the advantage than ${p.san}.`,
+    `The difference between ${p.san} and ${p.bestSan} is more positional than tactical here — no immediate material swings either way, but ${p.bestSan} keeps pieces more active and options more flexible.`,
+    `This one's subtler: nothing hangs outright either way, but ${p.bestSan} leads to a position the engine rates higher, generally down to piece activity or structure rather than a single tactic.`
+  ];
+  return pick(genericTemplates);
+}
+
+const setupScreen = document.getElementById('setupScreen');
+const progressScreen = document.getElementById('progressScreen');
+const reviewScreen = document.getElementById('reviewScreen');
+const setupError = document.getElementById('setupError');
+
+document.getElementById('analyzeBtn').onclick = async () => {
+  const pgnText = document.getElementById('pgnInput').value.trim();
+  const depth = parseInt(document.getElementById('depthSelect').value, 10);
+  YOUR_COLOR = document.getElementById('colorSelect').value;
+  setupError.style.display = 'none';
+  if(!pgnText){ setupError.textContent = 'Paste a PGN first.'; setupError.style.display='block'; return; }
+
+  setupScreen.style.display = 'none';
+  progressScreen.style.display = 'block';
+  document.getElementById('progressLabel').textContent = 'Loading engine…';
+  document.getElementById('progressFill').style.width = '5%';
+
+  try{
+    engine = new UciEngine();
+    await engine.init();
+    document.getElementById('progressLabel').textContent = 'Analyzing moves…';
+    GAME_DATA = await runQuickPass(pgnText, depth, (done, total) => {
+      const pct = 10 + Math.round((done/Math.max(total,1))*70);
+      document.getElementById('progressFill').style.width = pct+'%';
+      document.getElementById('progressDetail').textContent = done+' / '+total+' moves analyzed';
+    });
+    document.getElementById('progressLabel').textContent = 'Checking opponent moments…';
+    await annotateOpponentMoments(GAME_DATA, depth, (done, total) => {
+      const pct = 80 + Math.round((done/Math.max(total,1))*20);
+      document.getElementById('progressFill').style.width = pct+'%';
+      document.getElementById('progressDetail').textContent = 'opponent move '+done+' / '+total+' checked';
+    });
+    document.getElementById('progressFill').style.width = '100%';
+    startReview();
+  } catch(err){
+    progressScreen.style.display = 'none';
+    setupScreen.style.display = 'block';
+    setupError.textContent = 'Something went wrong: ' + (err && err.message ? err.message : err) +
+      '. This is most often the chess engine failing to load — try again, or try a different browser/network if it persists.';
+    setupError.style.display = 'block';
+  }
+};
+
+document.getElementById('resetBtn').onclick = () => {
+  reviewScreen.style.display = 'none';
+  setupScreen.style.display = 'block';
+  previewState = null;
+};
+
+function startReview(){
+  progressScreen.style.display = 'none';
+  reviewScreen.style.display = 'block';
+  slider.max = GAME_DATA.length - 1;
+  GAME_DATA.forEach(p => {
+    // Your own moves: flagged same as before, off engine eval loss.
+    if(p.side === YOUR_COLOR && (p.symbol==='??' || p.symbol==='?')) p.keyMoment = true;
+    // Opponent moves: only flagged if annotateOpponentMoments found an unaddressed moment
+    // (opponentMoment set + keyMoment already true from that pass) — nothing else to do here.
+  });
+  refreshCoordLabels();
+  buildChips();
+  buildMovelist();
+  current = 0;
+  render();
+}
+
+const boardGrid = document.getElementById('boardGrid');
+const arrowSvg = document.getElementById('arrowSvg');
+const evalWhite = document.getElementById('evalWhite');
+const evalBlack = document.getElementById('evalBlack');
+const moveNum = document.getElementById('moveNum');
+const moveSan = document.getElementById('moveSan');
+const stampEl = document.getElementById('stamp');
+const bestHint = document.getElementById('bestHint');
+const slider = document.getElementById('slider');
+const chipsEl = document.getElementById('chips');
+const panelKicker = document.getElementById('panelKicker');
+const panelTitle = document.getElementById('panelTitle');
+const panelNote = document.getElementById('panelNote');
+const movelistEl = document.getElementById('movelist');
+const explainBox = document.getElementById('explainBox');
+
+const PIECE_GLYPH = {K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙',k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'};
+
+let current = 0;
+let previewState = null;
+const explainCache = {};
+
+const squareEls = [];
+for(let row=0; row<8; row++){
+  for(let col=0; col<8; col++){
+    const sq = document.createElement('div');
+    const isLight = (row+col)%2===0;
+    sq.className = 'sq ' + (isLight?'light':'dark');
+    const coordEl = document.createElement('span'); coordEl.className='coord'; sq.appendChild(coordEl);
+    const p = document.createElement('span'); p.className='piece'; sq.appendChild(p);
+    boardGrid.appendChild(sq); squareEls.push(sq);
+  }
+}
+
+function refreshCoordLabels(){
+  // Rank numbers only show on the left-hand column of the *displayed* grid — recomputed on flip.
+  for(let row=0; row<8; row++){
+    for(let col=0; col<8; col++){
+      const idx = row*8+col;
+      const coordEl = squareEls[idx].querySelector('.coord');
+      const isLeftEdge = col===0;
+      if(isLeftEdge){
+        // Physical row `row` shows the rank that logically sits there given current orientation.
+        const logicalRank = YOUR_COLOR==='b' ? (row+1) : (8-row);
+        coordEl.textContent = logicalRank;
+        coordEl.style.display='';
+      } else {
+        coordEl.style.display='none';
+      }
+    }
+  }
+  const filesRow = document.getElementById('filesRow');
+  const files = YOUR_COLOR==='b' ? ['h','g','f','e','d','c','b','a'] : ['a','b','c','d','e','f','g','h'];
+  filesRow.innerHTML = files.map(f=>'<span>'+f+'</span>').join('');
+}
+
+let YOUR_COLOR = 'w'; // 'w' or 'b' — set from the setup screen; flips board orientation + rank/file labels
+
+function displayRC(row, col){
+  // Maps a "White at bottom, a1 at bottom-left" logical (row,col) into the
+  // physical grid position to draw at, flipping when the user played Black
+  // so their own pieces render at the bottom of the board.
+  if(YOUR_COLOR === 'b') return { row: 7-row, col: 7-col };
+  return { row, col };
+}
+
+function drawBoardMatrix(matrix){
+  for(let row=0; row<8; row++) for(let col=0; col<8; col++){
+    const cell = matrix[row][col];
+    const disp = displayRC(row, col);
+    const idx = disp.row*8 + disp.col;
+    const pieceEl = squareEls[idx].querySelector('.piece');
+    pieceEl.textContent = cell ? PIECE_GLYPH[cell] : '';
+    pieceEl.className = 'piece ' + (cell && cell===cell.toUpperCase() ? 'pw' : (cell?'pb':''));
+  }
+}
+
+function sqToRC(sqName){ return { col: sqName.charCodeAt(0)-97, row: 8-parseInt(sqName[1]) }; }
+
+function renderArrow(uci, color, markerId, dashed){
+  const from=uci.slice(0,2), to=uci.slice(2,4);
+  let a=sqToRC(from), b=sqToRC(to);
+  if(YOUR_COLOR === 'b'){ a = displayRC(a.row, a.col); b = displayRC(b.row, b.col); }
+  const x1=a.col+0.5, y1=a.row+0.5, x2=b.col+0.5, y2=b.row+0.5;
+  const dx=x2-x1, dy=y2-y1, len=Math.hypot(dx,dy)||1, shrink=0.32;
+  const ex=x2-(dx/len)*shrink, ey=y2-(dy/len)*shrink;
+  const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+  line.setAttribute('x1',x1); line.setAttribute('y1',y1); line.setAttribute('x2',ex); line.setAttribute('y2',ey);
+  line.setAttribute('stroke',color); line.setAttribute('stroke-width','0.11'); line.setAttribute('stroke-linecap','round'); line.setAttribute('opacity','0.85');
+  if(dashed) line.setAttribute('stroke-dasharray','0.16,0.14');
+  line.setAttribute('marker-end', 'url(#'+markerId+')');
+  arrowSvg.appendChild(line);
+}
+
+function severityInfo(symbol){
+  if(symbol==='??') return {cls:'sev-blunder', label:'Blunder', suffix:' — blunder'};
+  if(symbol==='?')  return {cls:'sev-mistake', label:'Mistake', suffix:' — mistake'};
+  if(symbol==='?!') return {cls:'sev-inaccuracy', label:'Inaccuracy', suffix:' — inaccuracy'};
+  return {cls:'sev-fine', label:'Minor', suffix:''};
+}
+
+function autoNote(p){
+  if(p.ply===0) return {kicker:'Position', title:'Starting position', note:'Use Next, drag the slider, or tap a chip to step through the game.'};
+  const sideLabel = p.side==='w'?'White':'Black';
+  const isYou = p.side === YOUR_COLOR;
+
+  if(!isYou && p.opponentMoment){
+    const om = p.opponentMoment;
+    if(om.type === 'missed-opportunity'){
+      return {kicker:sideLabel+' · You missed this', title:p.san, note:'This handed you a real chance — your reply ('+(om.replyMoves[0]||'—')+') didn’t take it. See "Why?" below.'};
+    } else {
+      return {kicker:sideLabel+' · You missed this', title:p.san, note:'This created a real threat against you — your reply ('+(om.replyMoves[0]||'—')+') didn’t deal with it. See "Why?" below.'};
+    }
+  }
+  if(!isYou) return {kicker:sideLabel+' move '+p.moveNumber, title:p.san, note:'Opponent move — nothing you needed to react to here.'};
+
+  if(p.symbol==='??') return {kicker:sideLabel+' · Blunder', title:p.san+' ??', note:'A serious mistake — engine preferred '+(p.bestSan||'—')+' instead.'};
+  if(p.symbol==='?') return {kicker:sideLabel+' · Mistake', title:p.san+' ?', note:(p.bestSan||'—')+' was stronger here.'};
+  if(p.symbol==='?!') return {kicker:sideLabel+' · Inaccuracy', title:p.san+' ?!', note:(p.bestSan||'—')+' kept more of the advantage.'};
+  return {kicker:sideLabel+' move '+p.moveNumber, title:p.san, note:'A solid, reasonable move.'};
+}
+
+function linesHtml(p){
+  const isYou = p.side === YOUR_COLOR;
+  if(!isYou && p.opponentMoment){
+    const replySeq = (p.opponentMoment.replyMoves||[]).join(' ');
+    return '<div class="explain-lines">' +
+      '<div class="line-row"><span class="line-label">Their move:</span><span class="line-moves">'+p.san+'</span></div>' +
+      '<div class="line-row" style="margin-top:6px;"><span class="line-label">Your reply:</span><span class="line-moves">'+(replySeq||'—')+'</span></div>' +
+      '</div>';
+  }
+  const bestTxt = (p.bestLineSan && p.bestLineSan.length) ? p.bestLineSan.join(' ') : p.bestSan;
+  const playedTxt = (p.playedLineSan && p.playedLineSan.length) ? (p.san+' '+p.playedLineSan.join(' ')) : p.san;
+  const canBest = p.bestLineSteps && p.bestLineSteps.length;
+  const canPlayed = p.playedLineSteps && p.playedLineSteps.length;
+  return '<div class="explain-lines">' +
+    '<div class="line-row"><span class="line-label">Recommended:</span><span class="line-moves">'+bestTxt+'</span></div>' +
+    (canBest ? '<button class="preview-trigger" data-ply="'+p.ply+'" data-which="best">▶ Show on board</button>' : '') +
+    '<div class="line-row" style="margin-top:6px;"><span class="line-label">As played:</span><span class="line-moves">'+playedTxt+'</span></div>' +
+    (canPlayed ? '<button class="preview-trigger" data-ply="'+p.ply+'" data-which="played">▶ Show on board</button>' : '') +
+    '</div>';
+}
+
+function renderExplainBox(p){
+  const cached = explainCache[p.ply];
+  const isYou = p.side === YOUR_COLOR;
+  const sev = (!isYou && p.opponentMoment) ? {cls:'sev-mistake', label: p.opponentMoment.type==='missed-opportunity' ? 'Missed chance' : 'Missed defence'} : severityInfo(p.symbol);
+  if(cached && cached.text){
+    explainBox.style.display='block';
+    explainBox.innerHTML = '<div class="explain-tag '+sev.cls+'">'+sev.label+'</div>' + linesHtml(p) + '<div class="explain-text"></div>';
+    explainBox.querySelector('.explain-text').textContent = cached.text;
+  } else {
+    explainBox.style.display='none'; explainBox.innerHTML='';
+  }
+}
+
+function scrollToExplain(){ document.querySelector('.panel').scrollIntoView({behavior:'smooth', block:'nearest'}); }
+
+function onWhyClick(p){
+  const cached = explainCache[p.ply];
+  if(cached && cached.text){ scrollToExplain(); return; }
+  computeExplanation(p);
+  scrollToExplain();
+}
+
+async function computeExplanation(p){
+  const btn = document.getElementById('whyBtnTop');
+  const isCurrent = current === p.ply;
+  if(isCurrent && btn){ btn.disabled=true; btn.textContent='…'; }
+  if(isCurrent){ explainBox.style.display='block'; explainBox.innerHTML = '<div class="explain-loading" style="font-family:\'IBM Plex Mono\',monospace; font-size:12px; color:var(--ink-soft);">Working it out…</div>'; }
+  try{
+    const isYou = p.side === YOUR_COLOR;
+    if(isYou || !p.opponentMoment){
+      const depth = parseInt(document.getElementById('depthSelect').value,10);
+      await ensureDeepData(p, depth);
+    }
+    const text = generateExplanation(p);
+    explainCache[p.ply] = { text };
+  } catch(err){
+    explainCache[p.ply] = { text: 'Could not compute a detailed explanation for this position (engine data incomplete). The recommended move was ' + (p.bestSan||'—') + '.' };
+  }
+  if(current===p.ply){ renderExplainBox(GAME_DATA[current]); if(btn){btn.disabled=false; btn.textContent='Why?';} }
+}
+
+function startPreview(p, which){
+  const steps = which==='best' ? p.bestLineSteps : p.playedLineSteps;
+  if(!steps || !steps.length) return;
+  const startBoard = which==='best' ? p.boardBefore : p.board;
+  const label = which==='best' ? 'Recommended: '+p.bestSan : 'As played: '+p.san;
+  previewState = { ply:p.ply, which, steps, startBoard, index:-1, label };
+  renderPreview();
+  document.querySelector('.board-square-outer').scrollIntoView({behavior:'smooth', block:'center'});
+}
+function exitPreview(){ previewState = null; render(); }
+function previewStep(delta){
+  if(!previewState) return;
+  previewState.index = Math.max(-1, Math.min(previewState.steps.length-1, previewState.index+delta));
+  renderPreview();
+}
+function renderPreview(){
+  const ps = previewState;
+  const matrix = ps.index===-1 ? ps.startBoard : ps.steps[ps.index].board;
+  drawBoardMatrix(matrix);
+  arrowSvg.querySelectorAll('line').forEach(l=>l.remove());
+  if(ps.index>=0) renderArrow(ps.steps[ps.index].uci, '#c9a227', 'arrowhead-played', false);
+  document.getElementById('previewBar').style.display='flex';
+  document.getElementById('previewLabel').textContent = ps.label;
+  document.getElementById('previewStepLabel').textContent = ps.index===-1 ? 'start' : (ps.index+1)+'/'+ps.steps.length;
+  document.getElementById('prevStepBtn').disabled = ps.index===-1;
+  document.getElementById('nextStepBtn').disabled = ps.index===ps.steps.length-1;
+  moveNum.textContent = 'preview';
+  moveSan.textContent = ps.index===-1 ? 'Starting position' : ps.steps[ps.index].san;
+  stampEl.style.display='none';
+  document.getElementById('whyBtnTop').style.display='none';
+}
+document.getElementById('prevStepBtn').onclick = ()=>previewStep(-1);
+document.getElementById('nextStepBtn').onclick = ()=>previewStep(1);
+document.getElementById('exitPreviewBtn').onclick = exitPreview;
+document.addEventListener('click', (e)=>{
+  const btn = e.target.closest('.preview-trigger');
+  if(!btn) return;
+  const ply = parseInt(btn.dataset.ply), which = btn.dataset.which;
+  const p = GAME_DATA[ply];
+  if(p) startPreview(p, which);
+});
+
+function render(){
+  if(previewState){ renderPreview(); return; }
+  document.getElementById('previewBar').style.display='none';
+  const p = GAME_DATA[current];
+
+  drawBoardMatrix(p.board);
+  arrowSvg.querySelectorAll('line').forEach(l=>l.remove());
+  const isYouNow = p.side === YOUR_COLOR;
+  const isOppMomentNow = !isYouNow && p.opponentMoment;
+  if(p.uci){
+    const isBlunderish = p.symbol==='?' || p.symbol==='??' || isOppMomentNow;
+    renderArrow(p.uci, isBlunderish?'#9c3b2e':'#c9a227', 'arrowhead-played', false);
+  }
+  if(p.bestUci && p.bestUci !== p.uci && isYouNow && (p.symbol==='?'||p.symbol==='??')){
+    renderArrow(p.bestUci, '#4b7a5b', 'arrowhead-best', true);
+  }
+
+  let cp = p.cpWhite, pct;
+  if(Math.abs(cp)>=90000){ pct = cp>0?100:0; } else { pct = 50 + Math.max(-50, Math.min(50, cp/20)); }
+  evalWhite.style.height = pct+'%'; evalBlack.style.height = (100-pct)+'%';
+
+  const whyBtnTop = document.getElementById('whyBtnTop');
+  const isYou = p.side === YOUR_COLOR;
+  if(p.ply===0){
+    moveNum.textContent='start'; moveSan.textContent='Starting position'; stampEl.style.display='none';
+    bestHint.innerHTML=''; whyBtnTop.style.display='none';
+  } else if(!isYou && p.opponentMoment){
+    moveNum.textContent = p.moveNumber + (p.side==='w'?'.':'...');
+    moveSan.textContent = p.san + (p.isMate?'#':(p.isCheck?'+':''));
+    stampEl.style.display='inline-block';
+    stampEl.textContent = p.opponentMoment.type==='missed-opportunity' ? '!' : '⚠';
+    stampEl.className = 'stamp ' + (p.opponentMoment.type==='missed-opportunity' ? 'inacc' : 'mistake');
+    bestHint.textContent = p.opponentMoment.type==='missed-opportunity' ? 'You had a chance here — see Why?' : 'This needed a response — see Why?';
+    whyBtnTop.style.display='inline-block'; whyBtnTop.disabled=false; whyBtnTop.textContent='Why?';
+    whyBtnTop.className = 'why-btn sev-mistake';
+    whyBtnTop.onclick = ()=>onWhyClick(p);
+  } else if(!isYou){
+    moveNum.textContent = p.moveNumber + (p.side==='w'?'.':'...');
+    moveSan.textContent = p.san + (p.isMate?'#':(p.isCheck?'+':''));
+    stampEl.style.display='none'; bestHint.innerHTML=''; whyBtnTop.style.display='none';
+  } else {
+    moveNum.textContent = p.moveNumber + (p.side==='w'?'.':'...');
+    moveSan.textContent = p.san + (p.isMate?'#':(p.isCheck?'+':''));
+    if(p.symbol){
+      stampEl.style.display='inline-block'; stampEl.textContent=p.symbol;
+      stampEl.className = 'stamp ' + (p.symbol==='??'?'blunder':p.symbol==='?'?'mistake':'inacc');
+    } else { stampEl.style.display='none'; }
+    if(p.bestSan && p.bestSan !== p.san){
+      bestHint.textContent = 'Engine preferred: ' + p.bestSan;
+      const sev = severityInfo(p.symbol);
+      whyBtnTop.style.display='inline-block'; whyBtnTop.disabled=false; whyBtnTop.textContent='Why?';
+      whyBtnTop.className = 'why-btn ' + sev.cls;
+      whyBtnTop.onclick = ()=>onWhyClick(p);
+    } else { bestHint.innerHTML=''; whyBtnTop.style.display='none'; }
+  }
+
+  if(p.keyMoment){
+    const a = autoNote(p);
+    panelKicker.textContent = a.kicker.toUpperCase()+' · KEY MOMENT'; panelTitle.textContent = a.title; panelNote.textContent = a.note;
+  } else {
+    const a = autoNote(p);
+    panelKicker.textContent = a.kicker; panelTitle.textContent = a.title; panelNote.textContent = a.note;
+  }
+  renderExplainBox(p);
+
+  document.getElementById('btnFirst').disabled = current===0;
+  document.getElementById('btnPrev').disabled = current===0;
+  document.getElementById('btnNext').disabled = current===GAME_DATA.length-1;
+  document.getElementById('btnLast').disabled = current===GAME_DATA.length-1;
+  slider.value = current;
+
+  document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('active', parseInt(c.dataset.ply)===current));
+  document.querySelectorAll('.mv-cell').forEach(c=>c.classList.toggle('active', parseInt(c.dataset.ply)===current));
+}
+
+function goTo(i){ previewState=null; current = Math.max(0, Math.min(GAME_DATA.length-1, i)); render(); }
+document.getElementById('btnFirst').onclick=()=>goTo(0);
+document.getElementById('btnPrev').onclick=()=>goTo(current-1);
+document.getElementById('btnNext').onclick=()=>goTo(current+1);
+document.getElementById('btnLast').onclick=()=>goTo(GAME_DATA.length-1);
+slider.oninput=(e)=>goTo(parseInt(e.target.value));
+document.addEventListener('keydown',(e)=>{ if(reviewScreen.style.display!=='block') return; if(e.key==='ArrowLeft') goTo(current-1); if(e.key==='ArrowRight') goTo(current+1); });
+
+function buildChips(){
+  chipsEl.innerHTML='';
+  GAME_DATA.filter(p=>p.keyMoment).forEach(p=>{
+    const isYou = p.side === YOUR_COLOR;
+    const isOppMoment = !isYou && p.opponentMoment;
+    const chip = document.createElement('button');
+    chip.className = 'chip' + (p.symbol==='??' || isOppMoment ? ' cat-blunder':'');
+    chip.dataset.ply = p.ply;
+    chip.textContent = p.moveNumber+(p.side==='w'?'.':'...')+p.san;
+    chip.onclick = ()=>goTo(p.ply);
+    chipsEl.appendChild(chip);
+  });
+}
+function buildMovelist(){
+  movelistEl.innerHTML='';
+  const byMove = {};
+  GAME_DATA.forEach(p=>{ if(p.ply===0) return; byMove[p.moveNumber]=byMove[p.moveNumber]||{}; byMove[p.moveNumber][p.side]=p; });
+  Object.keys(byMove).sort((a,b)=>a-b).forEach(mn=>{
+    const mnEl=document.createElement('div'); mnEl.className='mn'; mnEl.textContent=mn+'.'; movelistEl.appendChild(mnEl);
+    ['w','b'].forEach(side=>{
+      const p = byMove[mn][side];
+      const cell = document.createElement('div');
+      if(p){
+        const isYou = p.side === YOUR_COLOR;
+        const isOppMoment = !isYou && p.opponentMoment;
+        const flagged = (isYou && (p.symbol==='??'||p.symbol==='?')) || isOppMoment;
+        cell.className = 'mv-cell'+(flagged ? ' sym-blunder':'');
+        cell.dataset.ply=p.ply;
+        const symText = isYou ? (p.symbol||'') : (isOppMoment ? (p.opponentMoment.type==='missed-opportunity' ? '!' : '⚠') : '');
+        cell.innerHTML = '<span>'+p.san+(p.isMate?'#':p.isCheck?'+':'')+'</span>'+(symText?'<span class="sym">'+symText+'</span>':'<span></span>');
+        cell.onclick = ()=>goTo(p.ply);
+      }
+      movelistEl.appendChild(cell);
+    });
+  });
+}
+
+if('serviceWorker' in navigator){
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service-worker.js').catch(()=>{ /* non-fatal if hosted somewhere that doesn't serve it */ });
+  });
+}
+</script>
+</body>
+</html>
