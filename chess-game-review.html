@@ -265,7 +265,9 @@ class UciEngine {
   init(){
     return new Promise((resolve, reject) => {
       let settled = false;
-      const engineUrl = 'https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.wasm.js';
+      // jsDelivr, not Cloudflare's cdnjs — cdnjs' CORS policy blocks cross-origin Worker loading
+      // from a GitHub Pages origin (confirmed 2026-08-13); jsDelivr serves this correctly.
+      const engineUrl = 'https://cdn.jsdelivr.net/npm/stockfish@10.0.2/src/stockfish.js';
       const attempts = [];
 
       const tryDirect = () => {
