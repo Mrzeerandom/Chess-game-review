@@ -265,26 +265,22 @@ class UciEngine {
   init(){
     return new Promise((resolve, reject) => {
       let settled = false;
-      // jsDelivr, not Cloudflare's cdnjs — cdnjs' CORS policy blocks cross-origin Worker loading
-      // from a GitHub Pages origin (confirmed 2026-08-13); jsDelivr serves this correctly.
-      // Must be the .min.js build, not stockfish.js — the unminified build throws
-      // "Assertion failed: Cannot call unknown function init" when loaded standalone
-      // as a cross-origin Worker (confirmed 2026-08-13); stockfish.min.js is the
-      // package's actual published default entry point and initializes cleanly.
-      const engineUrl = 'https://cdn.jsdelivr.net/npm/stockfish@10.0.2/src/stockfish.min.js';
+      // Self-hosted, same-origin as this page — NOT a CDN. Two prior CDN approaches both
+      // failed (confirmed 2026-08-13): (1) cdnjs.cloudflare.com blocks cross-origin Worker
+      // construction from a GitHub Pages origin outright; (2) jsDelivr allows the Worker to
+      // construct, but stockfish.min.js loads its companion stockfish.wasm via a path relative
+      // to its own script location — when loaded cross-origin (or via a blob: wrapper) that
+      // relative fetch breaks, so the wasm module never initializes and every UCI call fails
+      // with "Assertion failed: Cannot call unknown function ... make sure it is exported".
+      // Fix: stockfish.min.js + stockfish.wasm are both committed to this repo, side by side
+      // with this HTML file, so the relative fetch resolves correctly and there's no
+      // cross-origin restriction to work around at all.
+      const engineUrl = 'stockfish.min.js';
       const attempts = [];
 
       const tryDirect = () => {
         try{ this.worker = new Worker(engineUrl); return true; }
-        catch(e){ attempts.push('direct cross-origin: ' + e.message); return false; }
-      };
-      const tryBlob = () => {
-        try{
-          const bootstrap = "importScripts('" + engineUrl + "');";
-          const blob = new Blob([bootstrap], {type:'application/javascript'});
-          this.worker = new Worker(URL.createObjectURL(blob));
-          return true;
-        } catch(e){ attempts.push('blob wrapper: ' + e.message); return false; }
+        catch(e){ attempts.push('direct: ' + e.message); return false; }
       };
 
       const wireUp = () => {
@@ -307,8 +303,7 @@ class UciEngine {
       };
 
       if(tryDirect()){ wireUp(); }
-      else if(tryBlob()){ wireUp(); }
-      else { reject(new Error('Both loading methods failed: ' + attempts.join(' | '))); }
+      else { reject(new Error('Engine failed to load: ' + attempts.join(' | '))); }
     });
   }
 
