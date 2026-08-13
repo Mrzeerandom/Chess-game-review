@@ -267,7 +267,11 @@ class UciEngine {
       let settled = false;
       // jsDelivr, not Cloudflare's cdnjs — cdnjs' CORS policy blocks cross-origin Worker loading
       // from a GitHub Pages origin (confirmed 2026-08-13); jsDelivr serves this correctly.
-      const engineUrl = 'https://cdn.jsdelivr.net/npm/stockfish@10.0.2/src/stockfish.js';
+      // Must be the .min.js build, not stockfish.js — the unminified build throws
+      // "Assertion failed: Cannot call unknown function init" when loaded standalone
+      // as a cross-origin Worker (confirmed 2026-08-13); stockfish.min.js is the
+      // package's actual published default entry point and initializes cleanly.
+      const engineUrl = 'https://cdn.jsdelivr.net/npm/stockfish@10.0.2/src/stockfish.min.js';
       const attempts = [];
 
       const tryDirect = () => {
