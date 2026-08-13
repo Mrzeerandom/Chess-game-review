@@ -90,6 +90,10 @@
   .preview-btn:disabled{opacity:.4; cursor:default;}
   .preview-step{font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:#a99f8c; min-width:36px; text-align:center; display:inline-block;}
   .preview-exit{background:transparent; border:1px solid rgba(236,229,211,0.35); color:var(--paper); border-radius:14px; padding:4px 11px; font-family:'IBM Plex Mono',monospace; font-size:11px; cursor:pointer;}
+  .preview-sequence{flex-basis:100%; font-family:'IBM Plex Mono',monospace; font-size:12px; color:#c9bfa8; line-height:1.6; margin-top:2px;}
+  .preview-sequence .seq-move{padding:1px 4px; border-radius:3px; margin-right:2px;}
+  .preview-sequence .seq-move.seq-current{background:var(--brass); color:#221c14; font-weight:700;}
+  .preview-sequence .seq-move.seq-done{color:#f5efe0;}
   .preview-trigger{display:block; margin-top:5px; font-family:'IBM Plex Mono',monospace; font-size:11px; font-weight:600; background:transparent; border:1px solid var(--brass-soft); color:var(--brass-soft); border-radius:14px; padding:3px 10px; cursor:pointer;}
   .move-readout{margin-top:12px; display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:40px;}
   .move-current{display:flex; align-items:center; gap:9px; flex-wrap:wrap;}
@@ -220,6 +224,7 @@
         <button class="preview-btn" id="nextStepBtn">▶</button>
         <button class="preview-exit" id="exitPreviewBtn">Exit</button>
       </div>
+      <div class="preview-sequence" id="previewSequence"></div>
     </div>
 
     <div class="move-readout">
@@ -231,6 +236,13 @@
       </div>
     </div>
     <div class="best-hint" id="bestHint" style="min-height:16px;"></div>
+
+    <!-- explainBox moved here, directly under the Why button, so the "Show on board"
+         line/button appears exactly where Alex expects it instead of scrolled away
+         inside the separate position panel below (confirmed 2026-08-13 — the old
+         placement made the button effectively invisible without manual scrolling,
+         reported as "the button is gone"). -->
+    <div id="explainBox" style="display:none;"></div>
 
     <div class="controls">
       <button class="navbtn" id="btnFirst">|◀</button>
@@ -246,7 +258,6 @@
       <div class="kicker" id="panelKicker">Position</div>
       <h3 id="panelTitle">Starting position</h3>
       <p id="panelNote"></p>
-      <div id="explainBox" style="display:none;"></div>
     </div>
 
     <div class="movelist-wrap">
@@ -569,13 +580,35 @@ async function annotateOpponentMoments(plies, depth, onProgress){
     const cpAfterYou = cpFromYourPerspective(oppPly.cpWhite, yourColor);
     const swing = cpAfterYou - cpBeforeYou; // positive = swung in your favour, negative = swung against you
 
+    // Immediate-eval swing catches moves that already won/lost material outright.
+    // But a move can create a genuine, undefended threat (e.g. a knight jumping to
+    // an outpost eyeing an undefended piece) while the eval barely moves yet, because
+    // the threat hasn't been "cashed in" on the board yet — it's real, just not
+    // captured. Immediate eval alone missed exactly this case (confirmed 2026-08-13,
+    // Alex's own game: 5...Nb4 threatened an undefended piece on d3 with no eval
+    // swing yet, so it went unflagged as "nothing to react to").
+    // Fix: also run the same hanging-piece detector used for your own moves
+    // (materialFactsStructured — real attacker/defender lists off the board, not
+    // eval-based) on the position right after their move. If it finds one of YOUR
+    // pieces attacked and undefended, that's a live threat regardless of what the
+    // eval number says. If it finds one of THEIR OWN pieces hanging (they blundered
+    // it), that's a free-piece opportunity for you, same idea in reverse.
+    let materialThreat = null, materialOpportunity = null;
     if(Math.abs(swing) < OPPONENT_SWING_THRESHOLD_CP){
-      oppPly.opponentMoment = null; // no meaningful swing — nothing to flag, ever
-      continue;
+      const afterMoveChess = new Chess(oppPly.fenBefore);
+      afterMoveChess.move({from: oppPly.uci.slice(0,2), to: oppPly.uci.slice(2,4), promotion: oppPly.uci.slice(4,5)||undefined});
+      const afterFen = afterMoveChess.fen();
+      const facts = materialFactsStructured(afterFen);
+      materialThreat = findHangingPiece(facts, yourColor);       // one of YOUR pieces now hanging
+      materialOpportunity = findWinningCapture(facts, oppColor); // one of THEIR pieces left hanging
+      if(!materialThreat && !materialOpportunity){
+        oppPly.opponentMoment = null; // no meaningful swing and no concrete hanging-piece either way
+        continue;
+      }
     }
 
-    const isOpportunity = swing > 0; // their move handed you something
-    const isThreat = swing < 0;      // their move created danger for you
+    const isOpportunity = materialOpportunity ? true : swing > 0; // their move handed you something
+    const isThreat = materialThreat ? true : swing < 0;           // their move created danger for you
 
     // Collect your next up-to-3 replies after this opponent move.
     const yourReplies = [];
@@ -591,19 +624,38 @@ async function annotateOpponentMoments(plies, depth, onProgress){
       continue;
     }
 
-    // Did you actually address it? Compare the eval right after your reply-window
-    // against the peak swing — if you clawed back most of an opportunity/threat,
-    // treat it as handled. Anything still mostly unaddressed after your replies gets flagged.
     const lastReply = yourReplies[yourReplies.length-1];
     const cpAfterYourReplies = cpFromYourPerspective(lastReply.cpWhite, yourColor);
+    const isMaterialCase = !!(materialThreat || materialOpportunity);
 
-    let handled;
-    if(isOpportunity){
-      // You "took it" if the advantage roughly held or grew across your replies.
-      handled = (cpAfterYourReplies - cpBeforeYou) >= (swing * 0.6);
+    let handled, effectiveSwing;
+    if(isMaterialCase){
+      // Material-based detection: check directly whether the specific hanging piece
+      // is still hanging after your reply window, rather than trusting the eval number
+      // (which may not have moved even though the underlying threat is completely real).
+      const targetSquare = (materialThreat || materialOpportunity).square;
+      const targetColor = materialThreat ? yourColor : oppColor;
+      const lastReplyChess = new Chess(lastReply.fenBefore);
+      lastReplyChess.move({from: lastReply.uci.slice(0,2), to: lastReply.uci.slice(2,4), promotion: lastReply.uci.slice(4,5)||undefined});
+      const factsAfterReplies = materialFactsStructured(lastReplyChess.fen());
+      // Still hanging if a same-color piece sits on that square, undefended, and still attacked.
+      // If the piece moved, got captured, or is now defended, treat as handled either way.
+      const stillHanging = factsAfterReplies && factsAfterReplies.some(f => f.square===targetSquare && f.colorCode===targetColor && f.undefended);
+      handled = !stillHanging;
+      effectiveSwing = (materialThreat || materialOpportunity).value * 100; // rough centipawn proxy for logging/display only
+      if(isThreat) effectiveSwing = -effectiveSwing;
     } else {
-      // You "defended it" if you clawed back most of the threat.
-      handled = (cpAfterYourReplies - cpBeforeYou) >= (swing * 0.4); // swing is negative here, so this checks you didn't let it get much worse
+      // Did you actually address it? Compare the eval right after your reply-window
+      // against the peak swing — if you clawed back most of an opportunity/threat,
+      // treat it as handled. Anything still mostly unaddressed after your replies gets flagged.
+      effectiveSwing = swing;
+      if(isOpportunity){
+        // You "took it" if the advantage roughly held or grew across your replies.
+        handled = (cpAfterYourReplies - cpBeforeYou) >= (swing * 0.6);
+      } else {
+        // You "defended it" if you clawed back most of the threat.
+        handled = (cpAfterYourReplies - cpBeforeYou) >= (swing * 0.4); // swing is negative here, so this checks you didn't let it get much worse
+      }
     }
 
     if(handled){
@@ -611,7 +663,7 @@ async function annotateOpponentMoments(plies, depth, onProgress){
     } else {
       oppPly.opponentMoment = {
         type: isOpportunity ? 'missed-opportunity' : 'missed-defense',
-        swingCp: swing,
+        swingCp: effectiveSwing,
         replyMoves: yourReplies.map(r=>r.san),
         replyPlies: yourReplies.map(r=>r.ply)
       };
@@ -978,9 +1030,17 @@ function linesHtml(p){
   const isYou = p.side === YOUR_COLOR;
   if(!isYou && p.opponentMoment){
     const replySeq = (p.opponentMoment.replyMoves||[]).join(' ');
+    // playedLineSteps here is the engine's own best continuation starting right
+    // after their move (i.e. what YOU should have played and how the engine
+    // continues it) — computed by ensureDeepData same as for your own moves.
+    // Previously this branch never showed it at all (fixed 2026-08-13).
+    const recommendedTxt = (p.playedLineSan && p.playedLineSan.length) ? p.playedLineSan.join(' ') : (p.bestSan||'—');
+    const canRecommended = p.playedLineSteps && p.playedLineSteps.length;
     return '<div class="explain-lines">' +
       '<div class="line-row"><span class="line-label">Their move:</span><span class="line-moves">'+p.san+'</span></div>' +
       '<div class="line-row" style="margin-top:6px;"><span class="line-label">Your reply:</span><span class="line-moves">'+(replySeq||'—')+'</span></div>' +
+      '<div class="line-row" style="margin-top:6px;"><span class="line-label">Recommended instead:</span><span class="line-moves">'+recommendedTxt+'</span></div>' +
+      (canRecommended ? '<button class="preview-trigger" data-ply="'+p.ply+'" data-which="played">▶ Show on board</button>' : '') +
       '</div>';
   }
   const bestTxt = (p.bestLineSan && p.bestLineSan.length) ? p.bestLineSan.join(' ') : p.bestSan;
@@ -1008,13 +1068,16 @@ function renderExplainBox(p){
   }
 }
 
-function scrollToExplain(){ document.querySelector('.panel').scrollIntoView({behavior:'smooth', block:'nearest'}); }
+function scrollToExplain(){ explainBox.scrollIntoView({behavior:'smooth', block:'center'}); }
 
 function onWhyClick(p){
   const cached = explainCache[p.ply];
   if(cached && cached.text){ scrollToExplain(); return; }
-  computeExplanation(p);
-  scrollToExplain();
+  // Scroll after the explanation actually renders, not before — explainBox is
+  // empty/hidden until computeExplanation finishes (async engine work), so scrolling
+  // immediately had nothing to scroll to yet and often didn't end up in the right
+  // place once the content landed a moment later.
+  computeExplanation(p).then(scrollToExplain);
 }
 
 async function computeExplanation(p){
@@ -1023,11 +1086,13 @@ async function computeExplanation(p){
   if(isCurrent && btn){ btn.disabled=true; btn.textContent='…'; }
   if(isCurrent){ explainBox.style.display='block'; explainBox.innerHTML = '<div class="explain-loading" style="font-family:\'IBM Plex Mono\',monospace; font-size:12px; color:var(--ink-soft);">Working it out…</div>'; }
   try{
-    const isYou = p.side === YOUR_COLOR;
-    if(isYou || !p.opponentMoment){
-      const depth = parseInt(document.getElementById('depthSelect').value,10);
-      await ensureDeepData(p, depth);
-    }
+    // Always compute the deep line data, including for opponent moments — the
+    // "recommended reply" line (playedLineSteps, the engine's best continuation
+    // for YOU right after their move) is exactly the "what should I have done"
+    // play-by-play Alex expects to see, and was previously skipped entirely for
+    // opponent moments, leaving no best-move follow-up shown for them (fixed 2026-08-13).
+    const depth = parseInt(document.getElementById('depthSelect').value,10);
+    await ensureDeepData(p, depth);
     const text = generateExplanation(p);
     explainCache[p.ply] = { text };
   } catch(err){
@@ -1040,7 +1105,8 @@ function startPreview(p, which){
   const steps = which==='best' ? p.bestLineSteps : p.playedLineSteps;
   if(!steps || !steps.length) return;
   const startBoard = which==='best' ? p.boardBefore : p.board;
-  const label = which==='best' ? 'Recommended: '+p.bestSan : 'As played: '+p.san;
+  const isOppMoment = p.side !== YOUR_COLOR && p.opponentMoment;
+  const label = which==='best' ? 'Recommended: '+p.bestSan : (isOppMoment ? 'Recommended instead: '+(p.playedLineSan&&p.playedLineSan[0]||'') : 'As played: '+p.san);
   previewState = { ply:p.ply, which, steps, startBoard, index:-1, label };
   renderPreview();
   document.querySelector('.board-square-outer').scrollIntoView({behavior:'smooth', block:'center'});
@@ -1066,6 +1132,16 @@ function renderPreview(){
   moveSan.textContent = ps.index===-1 ? 'Starting position' : ps.steps[ps.index].san;
   stampEl.style.display='none';
   document.getElementById('whyBtnTop').style.display='none';
+
+  // Running move-sequence line: the whole line laid out as text, with the move
+  // you're currently stepped to highlighted, and moves already stepped past marked
+  // done — so you can see the full sequence at a glance while also stepping through
+  // it visually on the board (added 2026-08-13, Alex asked for both together).
+  const seqEl = document.getElementById('previewSequence');
+  seqEl.innerHTML = ps.steps.map((s,i)=>{
+    const cls = i===ps.index ? 'seq-move seq-current' : (i<ps.index ? 'seq-move seq-done' : 'seq-move');
+    return '<span class="'+cls+'">'+s.san+'</span>';
+  }).join('');
 }
 document.getElementById('prevStepBtn').onclick = ()=>previewStep(-1);
 document.getElementById('nextStepBtn').onclick = ()=>previewStep(1);
