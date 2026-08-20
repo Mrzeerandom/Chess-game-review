@@ -101,8 +101,9 @@
   .move-san{font-family:'Source Serif 4',serif; font-weight:600; font-size:22px; color:#f5efe0;}
   .stamp{font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:16px; padding:2px 7px; border-radius:3px; transform:rotate(-6deg); border:1.5px solid currentColor; display:inline-block;}
   .stamp.blunder{color:var(--oxblood); border-color:var(--oxblood);} .stamp.mistake{color:#c97a3a; border-color:#c97a3a;} .stamp.inacc{color:var(--brass); border-color:var(--brass);}
+  .stamp.sev-fine{color:var(--sage); border-color:var(--sage);}
   .why-btn{font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:11.5px; padding:5px 11px; border-radius:14px; cursor:pointer; flex-shrink:0; border:1.5px solid var(--brass-soft); background:transparent; color:var(--brass-soft);}
-  .why-btn.sev-blunder{background:var(--oxblood); border-color:var(--oxblood); color:#f5efe0;} .why-btn.sev-mistake{border-color:#c97a3a; color:#c97a3a;} .why-btn.sev-inaccuracy{border-color:var(--brass); color:var(--brass);} .why-btn.sev-fine{border-color:rgba(236,229,211,0.28); color:#a99f8c;}
+  .why-btn.sev-blunder{background:var(--oxblood); border-color:var(--oxblood); color:#f5efe0;} .why-btn.sev-mistake{border-color:#c97a3a; color:#c97a3a;} .why-btn.sev-inaccuracy{border-color:var(--brass); color:var(--brass);} .why-btn.sev-fine{border-color:var(--sage); color:var(--sage);}
   .why-btn:disabled{opacity:.55; cursor:default;}
   .best-hint{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--sage);}
   .controls{display:flex; align-items:center; gap:8px; margin-top:12px;}
@@ -143,6 +144,23 @@
   footer{margin-top:28px; text-align:center; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#6d6455;}
   #reviewScreen{display:none;}
   .reset-link{font-family:'IBM Plex Mono',monospace; font-size:11px; color:#a99f8c; background:none; border:none; text-decoration:underline; cursor:pointer; padding:0;}
+
+  #summarySection{margin:16px 0 22px;}
+  .summary-stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(84px,1fr)); gap:8px; margin-top:10px;}
+  .summary-stat{background:var(--bg-2); border:1px solid rgba(236,229,211,0.14); border-radius:8px; padding:9px 8px; text-align:center;}
+  .summary-stat .num{font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:19px; color:#f5efe0;}
+  .summary-stat.stat-blunder .num{color:var(--oxblood);} .summary-stat.stat-mistake .num{color:#c97a3a;} .summary-stat.stat-inacc .num{color:var(--brass);}
+  .summary-stat.stat-good .num{color:var(--sage);}
+  .summary-stat .lbl{font-family:'IBM Plex Mono',monospace; font-size:9.5px; letter-spacing:.05em; text-transform:uppercase; color:#a99f8c; margin-top:3px;}
+  .summary-headline{font-size:14px; line-height:1.6; color:#d8d0bc; margin-top:12px;}
+  .summary-moments{margin-top:14px;}
+  .summary-moment{background:var(--bg-2); border:1px solid rgba(236,229,211,0.14); border-radius:8px; padding:10px 12px; margin-top:8px; cursor:pointer;}
+  .summary-moment:hover{border-color:var(--brass-soft);}
+  .summary-moment .sm-head{display:flex; align-items:center; gap:8px; font-family:'IBM Plex Mono',monospace; font-size:12px; color:#a99f8c;}
+  .summary-moment .sm-tag{font-weight:700; font-size:10px; letter-spacing:.05em; text-transform:uppercase; padding:2px 8px; border-radius:10px;}
+  .summary-moment .sm-tag.sev-blunder{background:var(--oxblood); color:#f5efe0;} .summary-moment .sm-tag.sev-mistake{background:#c97a3a; color:#221c14;} .summary-moment .sm-tag.sev-inaccuracy{background:var(--brass); color:#221c14;} .summary-moment .sm-tag.sev-fine{background:rgba(236,229,211,0.14); color:#d8d0bc;}
+  .summary-moment .sm-text{font-size:13.5px; line-height:1.55; color:#f0ead7; margin-top:6px;}
+  .summary-toggle{display:block; margin:14px 0 0; font-family:'IBM Plex Mono',monospace; font-size:11.5px; font-weight:600; background:transparent; border:1px solid var(--brass-soft); color:var(--brass-soft); border-radius:14px; padding:6px 13px; cursor:pointer;}
 </style>
 </head>
 <body>
@@ -200,6 +218,8 @@
       <div class="subline" id="reviewSubline"></div>
       <button class="reset-link" id="resetBtn" style="margin-top:8px;">&larr; analyze a different game</button>
     </header>
+
+    <div id="summarySection" style="display:none;"></div>
 
     <div class="board-row">
       <div class="evalbar-wrap" id="evalbarWrap">
@@ -532,7 +552,18 @@ async function runQuickPass(pgnText, depth, onProgress){
 
     const infoAfter = await engine.analyse(replay.fen(), Math.min(depth, 10));
     const cpWhite = scoreToCpWhite(infoAfter.score, replay.turn()==='w');
-    const loss = sideWhite ? (prevCpWhite - cpWhite) : (cpWhite - prevCpWhite);
+    // Loss must be measured against the SAME reference the recommendation came from
+    // (infoBefore, the search that also produced bestSan/bestUci), not the previous
+    // ply's post-move eval (prevCpWhite). Those are two different searches at two
+    // different depths/positions and can disagree — confirmed 2026-08-15, Alex's
+    // game: a move was labelled "?!" (an inaccuracy, implying a loss vs best) while
+    // bestSan named that exact same move, because the loss side of the calculation
+    // wasn't actually anchored to bestSan's own search. infoBefore.score is already
+    // the eval assuming the engine's own top move (bestUci) is played, from the
+    // mover's perspective at fenBefore — flip it to White's perspective here so it's
+    // directly comparable to cpWhite, and use THAT as the "before" reference instead.
+    const bestCpWhite = scoreToCpWhite(infoBefore.score, sideWhite);
+    const loss = sideWhite ? (bestCpWhite - cpWhite) : (cpWhite - bestCpWhite);
     prevCpWhite = cpWhite;
 
     plies.push({
@@ -561,12 +592,57 @@ async function runQuickPass(pgnText, depth, onProgress){
    or defended the threat. Only flag the opponent's move if you didn't —
    a "normal" opponent move that doesn't set up something you missed is
    left alone entirely.
+
+   2026-08-20 rework (per Alex — do not silently under-report): the
+   original version judged "did this move create a threat" purely from
+   the INSTANTANEOUS position right after the opponent's move — either
+   the raw eval swing at that single ply, or a static hanging-piece check
+   on that exact position. Both are single-ply/instantaneous checks, so
+   they miss two real categories: (1) a "quiet" tactic that isn't
+   decisive yet but wins material or worse a few forced moves later
+   (nothing hangs *yet*, and shallow eval at one ply often hasn't moved
+   enough to trip the threshold either), and (2) forced sequences ending
+   in mate, which should never be filtered out by a centipawn cutoff.
+   Fix: project forward using the engine's own best continuation
+   (simulateLine — already used elsewhere for bestLineSteps/playedLineSteps)
+   instead of judging off the single-ply position, and treat any mate
+   found in that projection as an automatic flag regardless of cp swing.
+   Cost: this runs one extra engine.analyse + simulateLine per opponent
+   move (previously this depth of look-ahead only happened lazily, on
+   click, via ensureDeepData) — roughly doubles engine work during the
+   "Checking opponent moments…" phase. Accepted per Alex: under-reporting
+   real misses is worse than a slower analysis pass.
 --------------------------------------------------------------------- */
 const OPPONENT_SWING_THRESHOLD_CP = 100; // meaningful swing, in centipawns, from your perspective
 const YOUR_REPLY_WINDOW = 3; // check up to this many of YOUR replies after their move
 
 function cpFromYourPerspective(cpWhite, yourColor){
   return yourColor === 'w' ? cpWhite : -cpWhite;
+}
+
+// Projects the position forward along the engine's own best continuation from `fen`
+// (via simulateLine, same machinery used for bestLineSteps/playedLineSteps) and
+// returns the eval a few plies out (where simulateLine's own quiet-detection stops),
+// plus whether that projected line ends in mate. This catches slow-developing tactics
+// that don't show as an immediate swing or an immediately-hanging piece, because it
+// looks at where best play actually lands rather than the position one ply deep.
+async function projectLine(fen, depth){
+  const info = await engine.analyse(fen, depth);
+  if(!info.pv || !info.pv.length){
+    return { projectedCpWhite: scoreToCpWhite(info.score, new Chess(fen).turn()==='w'), matePlies: null, steps: [] };
+  }
+  const sim = await simulateLine(fen, info.pv, engine, Math.min(depth,10));
+  const sideToMoveIsWhite = new Chess(fen).turn()==='w';
+  let projectedCpWhite = scoreToCpWhite(info.score, sideToMoveIsWhite);
+  let matePlies = (info.score && info.score.kind==='mate') ? Math.abs(info.score.val) : null;
+  // If the simulated line itself terminates in checkmate (ran out of legal replies),
+  // that's an even more concrete signal than the initial search's mate score.
+  if(sim.steps && sim.steps.length){
+    const c = new Chess(fen);
+    for(const s of sim.steps){ c.move({from:s.uci.slice(0,2), to:s.uci.slice(2,4), promotion:s.uci.slice(4,5)||undefined}); }
+    if(c.in_checkmate()) matePlies = matePlies===null ? sim.steps.length : Math.min(matePlies, sim.steps.length);
+  }
+  return { projectedCpWhite, matePlies, steps: sim.steps, sans: sim.sans };
 }
 
 async function annotateOpponentMoments(plies, depth, onProgress){
@@ -582,7 +658,7 @@ async function annotateOpponentMoments(plies, depth, onProgress){
     const before = plies[idx-1]; // position/eval just before opponent's move
     const cpBeforeYou = cpFromYourPerspective(before.cpWhite, yourColor);
     const cpAfterYou = cpFromYourPerspective(oppPly.cpWhite, yourColor);
-    const swing = cpAfterYou - cpBeforeYou; // positive = swung in your favour, negative = swung against you
+    const instantSwing = cpAfterYou - cpBeforeYou; // positive = swung in your favour, negative = swung against you
 
     // Immediate-eval swing catches moves that already won/lost material outright.
     // But a move can create a genuine, undefended threat (e.g. a knight jumping to
@@ -597,22 +673,44 @@ async function annotateOpponentMoments(plies, depth, onProgress){
     // pieces attacked and undefended, that's a live threat regardless of what the
     // eval number says. If it finds one of THEIR OWN pieces hanging (they blundered
     // it), that's a free-piece opportunity for you, same idea in reverse.
-    let materialThreat = null, materialOpportunity = null;
-    if(Math.abs(swing) < OPPONENT_SWING_THRESHOLD_CP){
-      const afterMoveChess = new Chess(oppPly.fenBefore);
-      afterMoveChess.move({from: oppPly.uci.slice(0,2), to: oppPly.uci.slice(2,4), promotion: oppPly.uci.slice(4,5)||undefined});
-      const afterFen = afterMoveChess.fen();
-      const facts = materialFactsStructured(afterFen);
-      materialThreat = findHangingPiece(facts, yourColor);       // one of YOUR pieces now hanging
-      materialOpportunity = findWinningCapture(facts, oppColor); // one of THEIR pieces left hanging
-      if(!materialThreat && !materialOpportunity){
-        oppPly.opponentMoment = null; // no meaningful swing and no concrete hanging-piece either way
-        continue;
-      }
+    const afterMoveChess = new Chess(oppPly.fenBefore);
+    afterMoveChess.move({from: oppPly.uci.slice(0,2), to: oppPly.uci.slice(2,4), promotion: oppPly.uci.slice(4,5)||undefined});
+    const afterFen = afterMoveChess.fen();
+    const facts = materialFactsStructured(afterFen);
+    const materialThreat = findHangingPiece(facts, yourColor);       // one of YOUR pieces now hanging
+    const materialOpportunity = findWinningCapture(facts, oppColor); // one of THEIR pieces left hanging
+
+    // Line-projected swing: walk the engine's own best continuation forward from
+    // right after their move, and compare THAT eventual eval (where the position
+    // actually settles under best play) to the before-eval, instead of only the
+    // single ply immediately after their move. This is what catches slow tactics —
+    // a threat that isn't cashed in yet still shows up once the forced sequence
+    // plays out a few moves.
+    const projection = await projectLine(afterFen, depth);
+    const cpProjectedYou = cpFromYourPerspective(projection.projectedCpWhite, yourColor);
+    const projectedSwing = cpProjectedYou - cpBeforeYou;
+    // Use whichever swing is larger in magnitude — instant eval already catches
+    // outright blunders fine; projection is there to catch what instant misses,
+    // not to ever report a SMALLER threat than instant already found.
+    const swing = Math.abs(projectedSwing) > Math.abs(instantSwing) ? projectedSwing : instantSwing;
+
+    // A forced mate found anywhere in the projected line is an automatic, unconditional
+    // flag — never filtered by the cp threshold. matePlies>0 counted from afterFen means
+    // the mate is delivered BY the opponent's side in that projection, i.e. a threat
+    // against you; matePlies<0 (engine score.kind mate with negative val, i.e. yourColor
+    // gets mated) is handled the same way via the sign already baked into cpWhite/cp
+    // conversion — projectedSwing will be a huge negative/positive number either way,
+    // but we still gate explicitly on matePlies so a mate can never be missed even in
+    // an edge case where the cp conversion saturates oddly.
+    const mateFound = projection.matePlies !== null;
+
+    if(!mateFound && !materialThreat && !materialOpportunity && Math.abs(swing) < OPPONENT_SWING_THRESHOLD_CP){
+      oppPly.opponentMoment = null; // no meaningful swing (instant or projected), no hanging piece, no forced mate
+      continue;
     }
 
     const isOpportunity = materialOpportunity ? true : swing > 0; // their move handed you something
-    const isThreat = materialThreat ? true : swing < 0;           // their move created danger for you
+    const isThreat = mateFound ? swing < 0 : (materialThreat ? true : swing < 0);           // their move created danger for you
 
     // Collect your next up-to-3 replies after this opponent move.
     const yourReplies = [];
@@ -633,7 +731,20 @@ async function annotateOpponentMoments(plies, depth, onProgress){
     const isMaterialCase = !!(materialThreat || materialOpportunity);
 
     let handled, effectiveSwing;
-    if(isMaterialCase){
+    if(mateFound && !isMaterialCase){
+      // Mate found in the projected best line and no cleaner material story to hang it
+      // on: "handled" here means the forced mate is no longer on the board after your
+      // reply window — i.e. you're no longer getting mated / no longer have the mate
+      // available. Re-run a fresh projection from the position after your replies and
+      // check whether mate is still forceable from there. This is deliberately a fresh
+      // engine look rather than trusting the eval delta, because a mate net either did
+      // or didn't get broken — that's a discrete fact, not a threshold judgement.
+      const lastReplyChess = new Chess(lastReply.fenBefore);
+      lastReplyChess.move({from: lastReply.uci.slice(0,2), to: lastReply.uci.slice(2,4), promotion: lastReply.uci.slice(4,5)||undefined});
+      const afterRepliesProjection = await projectLine(lastReplyChess.fen(), depth);
+      handled = afterRepliesProjection.matePlies === null;
+      effectiveSwing = isThreat ? -100000 : 100000; // mate-scale magnitude for display/sorting
+    } else if(isMaterialCase){
       // Material-based detection: check directly whether the specific hanging piece
       // is still hanging after your reply window, rather than trusting the eval number
       // (which may not have moved even though the underlying threat is completely real).
@@ -663,13 +774,33 @@ async function annotateOpponentMoments(plies, depth, onProgress){
     }
 
     if(handled){
-      oppPly.opponentMoment = null;
+      // Previously this just silenced the moment (oppPly.opponentMoment = null),
+      // which meant "opponent blundered their queen and you correctly took it" and
+      // "opponent made a totally normal move" both produced the exact same flat
+      // "nothing you needed to react to" text. Added 2026-08-15 per Alex: distinguish
+      // a genuinely handled threat/opportunity from true non-events, with its own
+      // positive message, instead of throwing that information away.
+      oppPly.opponentMoment = {
+        type: isOpportunity ? 'punished-opportunity' : 'defended-threat',
+        swingCp: effectiveSwing,
+        replyMoves: yourReplies.map(r=>r.san),
+        replyPlies: yourReplies.map(r=>r.ply),
+        handled: true,
+        mateFound: mateFound, matePlies: projection.matePlies,
+        projectedLineSan: projection.sans || null,
+        materialThreat: materialThreat, materialOpportunity: materialOpportunity
+      };
+      oppPly.keyMoment = false; // don't clutter the blunder/mistake chip list with things you got right
     } else {
       oppPly.opponentMoment = {
         type: isOpportunity ? 'missed-opportunity' : 'missed-defense',
         swingCp: effectiveSwing,
         replyMoves: yourReplies.map(r=>r.san),
-        replyPlies: yourReplies.map(r=>r.ply)
+        replyPlies: yourReplies.map(r=>r.ply),
+        handled: false,
+        mateFound: mateFound, matePlies: projection.matePlies,
+        projectedLineSan: projection.sans || null,
+        materialThreat: materialThreat, materialOpportunity: materialOpportunity
       };
       oppPly.keyMoment = true; // surfaces in chips/movelist alongside your own blunders
     }
@@ -684,6 +815,18 @@ async function ensureDeepData(p, depth){
   if(infoBefore.pv && infoBefore.pv.length){
     const bl = await simulateLine(p.fenBefore, infoBefore.pv, engine, Math.min(depth,10));
     p.bestLineSan = bl.sans; p.bestLineSteps = bl.steps; p.materialFactsAfterBestLine = bl.facts; p.materialFactsAfterBestLineStructured = bl.factsStructured;
+    // bestSan/bestUci were originally set during runQuickPass from an EARLIER,
+    // separate engine.analyse() call on this same position. Stockfish isn't
+    // guaranteed to return the same top move on two independent searches of the
+    // same FEN (search-order/hash-table effects) — confirmed 2026-08-14, Alex's
+    // game: "Engine preferred: Ne7" (from the quick pass) didn't match the
+    // recommended line's first move, "d6" (from this deeper pass). Fix: always
+    // make bestSan/bestUci agree with whatever line we're actually showing, by
+    // overwriting them from this exact PV rather than trusting the earlier value.
+    if(bl.sans.length){
+      p.bestSan = bl.sans[0];
+      p.bestUci = infoBefore.pv[0];
+    }
   } else { p.bestLineSan=[]; p.bestLineSteps=[]; p.materialFactsAfterBestLine=[]; p.materialFactsAfterBestLineStructured=[]; }
 
   const c2 = new Chess(p.fenBefore);
@@ -743,6 +886,36 @@ function describeTacticFromLine(p, which){
   return cap;
 }
 
+// Builds a concrete, consequence-first sentence when we have a real line or hanging
+// piece to point at — e.g. "you missed a line that leads to being mated" or "you missed
+// a line that wins a free queen" — rather than only a generic pawns-swing description.
+// Returns null if there's nothing more concrete than the swing number (falls back to
+// the existing generic templates below). Added 2026-08-20 per Alex: the swing-only
+// phrasing flagged THAT something was missed but not WHAT the actual consequence was.
+function concreteConsequenceText(p, isThreatSide){
+  const om = p.opponentMoment;
+  const lineTxt = (om.projectedLineSan && om.projectedLineSan.length) ? om.projectedLineSan.slice(0,6).join(' ') : null;
+
+  if(om.mateFound && om.matePlies !== null){
+    const movesWord = om.matePlies===1 ? 'move' : 'moves';
+    if(isThreatSide){
+      return `a forced mate in ${om.matePlies} ${movesWord}` + (lineTxt ? ` (${lineTxt})` : '') + (om.handled ? ', which your reply broke' : ', which is still there — this needed to be answered immediately');
+    } else {
+      return `a forced mate in ${om.matePlies} ${movesWord} against ${YOUR_COLOR==='w'?'Black':'White'}` + (lineTxt ? ` (${lineTxt})` : '') + (om.handled ? ', and you found it' : ', and it was missed');
+    }
+  }
+  const target = om.materialThreat || om.materialOpportunity;
+  if(target){
+    const belongsToYou = om.materialThreat === target;
+    const whoLoses = belongsToYou ? 'you' : (YOUR_COLOR==='w'?'Black':'White');
+    return `a free ${target.pieceName} on ${target.square}` + (lineTxt ? ` (e.g. ${lineTxt})` : '') + ` — ${whoLoses} ${belongsToYou?'were':'was'} about to lose it for nothing`;
+  }
+  if(lineTxt){
+    return `a forcing line (${lineTxt}) worth roughly ${Math.abs(om.swingCp/100).toFixed(1)} pawns`;
+  }
+  return null;
+}
+
 function generateOpponentMomentExplanation(p){
   const om = p.opponentMoment;
   const yourLabel = YOUR_COLOR==='w' ? 'White' : 'Black';
@@ -750,7 +923,34 @@ function generateOpponentMomentExplanation(p){
   const replySeq = (om.replyMoves||[]).join(' ');
   const swingPawns = Math.abs(om.swingCp/100).toFixed(1);
 
-  if(om.type === 'missed-opportunity'){
+  if(om.type === 'missed-opportunity' || om.type === 'missed-defense'){
+    const consequence = concreteConsequenceText(p, om.type==='missed-defense');
+    if(consequence){
+      return om.type === 'missed-opportunity'
+        ? `You missed ${consequence}. ${p.san} created it, but your reply (${replySeq || '—'}) didn't take it.`
+        : `You missed ${consequence}. ${p.san} created it, and your reply (${replySeq || '—'}) didn't deal with it.`;
+    }
+  }
+
+  if(om.type === 'punished-opportunity'){
+    const consequence = concreteConsequenceText(p, false);
+    if(consequence) return `${p.san} handed you ${consequence}, and your reply (${replySeq || '—'}) took it. Well spotted.`;
+    const templates = [
+      `${p.san} handed you a real chance — roughly ${swingPawns} pawns' worth — and your reply (${replySeq || '—'}) took it. Well spotted.`,
+      `${oppLabel} slipped here with ${p.san}, giving up about ${swingPawns} pawns of advantage, and you cashed it in with ${replySeq || '—'}.`,
+      `That was a genuine opening from ${p.san} (~${swingPawns} pawns), and ${replySeq || '—'} punished it correctly.`
+    ];
+    return pick(templates);
+  } else if(om.type === 'defended-threat'){
+    const consequence = concreteConsequenceText(p, true);
+    if(consequence) return `${p.san} created ${consequence}, but your reply (${replySeq || '—'}) dealt with it properly.`;
+    const templates = [
+      `${p.san} created real danger — about ${swingPawns} pawns' worth against you — but ${replySeq || '—'} dealt with it properly.`,
+      `That was a genuine threat (${p.san}, ~${swingPawns} pawns), and your reply (${replySeq || '—'}) defended it — no lasting damage.`,
+      `${p.san} put real pressure on, but ${replySeq || '—'} answered it — the threat didn't stick.`
+    ];
+    return pick(templates);
+  } else if(om.type === 'missed-opportunity'){
     const templates = [
       `${p.san} shifted the position roughly ${swingPawns} pawns in your favour — a real chance. Your reply (${replySeq || '—'}) didn't hold onto that swing, so most of it slipped away over the next few moves.`,
       `After ${p.san}, the position opened up in your favour by about ${swingPawns} pawns' worth of advantage. What followed (${replySeq || '—'}) didn't capitalise on it — worth going back and asking what would have kept that advantage.`,
@@ -774,6 +974,31 @@ function generateExplanation(p){
   const sideLabel = p.side==='w' ? 'White' : 'Black';
   const opp = p.side==='w' ? 'b' : 'w';
   const oppLabel = p.side==='w' ? 'Black' : 'White';
+
+  // 0) Mate check, highest priority: does the played move walk into a forced mate that
+  // the recommended move avoided, or does the recommended move deliver/force a mate
+  // that the played move missed? Checked directly against the simulated lines' final
+  // position (playedLineSteps/bestLineSteps, from ensureDeepData/simulateLine) rather
+  // than inferred from eval, since mate is a discrete fact, not a threshold judgement.
+  // Added 2026-08-20 per Alex: consequence-based explanations should name mate
+  // specifically ("missed a line that led to being mated"), not just cite a cp loss.
+  function lineEndsInMate(steps, fenStart){
+    if(!steps || !steps.length) return false;
+    const c = new Chess(fenStart);
+    for(const s of steps){ if(!c.move({from:s.uci.slice(0,2), to:s.uci.slice(2,4), promotion:s.uci.slice(4,5)||undefined})) break; }
+    return c.in_checkmate();
+  }
+  const playedFen = (() => { const c=new Chess(p.fenBefore); c.move({from:p.uci.slice(0,2), to:p.uci.slice(2,4), promotion:p.uci.slice(4,5)||undefined}); return c.fen(); })();
+  const playedLeadsToMate = lineEndsInMate(p.playedLineSteps, playedFen);
+  const bestLeadsToMate = lineEndsInMate(p.bestLineSteps, p.fenBefore);
+  if(playedLeadsToMate){
+    const line = (p.playedLineSan||[]).slice(0,6).join(' ');
+    return `${p.san} walks into a forced mate${line ? ' ('+p.san+' '+line+')' : ''} — ${oppLabel} can force checkmate from here. ${p.bestSan} avoided that entirely.`;
+  }
+  if(bestLeadsToMate){
+    const line = (p.bestLineSan||[]).slice(0,6).join(' ');
+    return `You missed a forced mate: ${p.bestSan}${line ? ' ('+line+')' : ''} forces checkmate. ${p.san} lets ${oppLabel} escape.`;
+  }
 
   // 1) Did the played move hang something the recommended move didn't?
   const hanging = findHangingPiece(p.materialFactsAfterPlayedLineStructured || [], p.side);
@@ -864,15 +1089,26 @@ document.getElementById('analyzeBtn').onclick = async () => {
     await engine.init();
     document.getElementById('progressLabel').textContent = 'Analyzing moves…';
     GAME_DATA = await runQuickPass(pgnText, depth, (done, total) => {
-      const pct = 10 + Math.round((done/Math.max(total,1))*70);
+      const pct = 10 + Math.round((done/Math.max(total,1))*50);
       document.getElementById('progressFill').style.width = pct+'%';
       document.getElementById('progressDetail').textContent = done+' / '+total+' moves analyzed';
     });
     document.getElementById('progressLabel').textContent = 'Checking opponent moments…';
     await annotateOpponentMoments(GAME_DATA, depth, (done, total) => {
-      const pct = 80 + Math.round((done/Math.max(total,1))*20);
+      const pct = 60 + Math.round((done/Math.max(total,1))*36);
       document.getElementById('progressFill').style.width = pct+'%';
       document.getElementById('progressDetail').textContent = 'opponent move '+done+' / '+total+' checked';
+    });
+    // Flag your own blunders/mistakes as keyMoments now (previously this only happened
+    // inside startReview, which runs AFTER the summary is built — that ordering meant
+    // buildGameSummary would only ever see opponent-moment keyMoments and silently miss
+    // every one of your own flagged moves in the rundown's top-moments list).
+    GAME_DATA.forEach(p => { if(p.side === YOUR_COLOR && (p.symbol==='??' || p.symbol==='?')) p.keyMoment = true; });
+    document.getElementById('progressLabel').textContent = 'Building game summary…';
+    document.getElementById('progressDetail').textContent = '';
+    await buildGameSummary(GAME_DATA, depth, (done, total) => {
+      const pct = 96 + Math.round((done/Math.max(total,1))*4);
+      document.getElementById('progressFill').style.width = Math.min(pct,100)+'%';
     });
     document.getElementById('progressFill').style.width = '100%';
     startReview();
@@ -891,6 +1127,137 @@ document.getElementById('resetBtn').onclick = () => {
   previewState = null;
 };
 
+/* ---------------------------------------------------------------------
+   GAME SUMMARY / RUNDOWN
+   Aggregates the per-move data that already exists (severity symbols,
+   opponentMoment flags) into: a stat line, and a curated list of the
+   game's most significant moments with concrete consequence text —
+   not just severity labels. Added 2026-08-20 per Alex.
+
+   Deep line data (bestLineSteps/playedLineSteps, needed for the mate
+   check and "wins a free X" phrasing) is normally computed lazily, only
+   when "Why?" is clicked (ensureDeepData). For the summary to show real
+   explanations up front, it's computed eagerly here — but ONLY for
+   keyMoment plies, not the whole game, so the cost stays bounded to
+   however many moments actually got flagged rather than re-running deep
+   analysis on every move.
+--------------------------------------------------------------------- */
+let GAME_SUMMARY = null;
+
+function severityRank(p){
+  // Rough "how significant" ordering so the top-moments list surfaces the
+  // biggest deals first: mate > your blunders > missed defense/opportunity > mistakes > inaccuracies.
+  const isYou = p.side === YOUR_COLOR;
+  if(!isYou && p.opponentMoment && !p.opponentMoment.handled){
+    if(p.opponentMoment.mateFound) return 1000;
+    return 500 + Math.abs(p.opponentMoment.swingCp||0)/100;
+  }
+  if(isYou && p.symbol==='??') return 400 + 0; // blunders grouped, order by original position later if needed
+  if(isYou && p.symbol==='?') return 200;
+  if(isYou && p.symbol==='?!') return 50;
+  return 0;
+}
+
+async function buildGameSummary(plies, depth, onProgress){
+  const keyPlies = plies.filter(p => p.keyMoment);
+  let done = 0;
+  for(const p of keyPlies){
+    done++; onProgress(done, keyPlies.length);
+    try{
+      await ensureDeepData(p, depth);
+      if(!explainCache[p.ply]) explainCache[p.ply] = { text: generateExplanation(p) };
+    } catch(e){
+      // Non-fatal — that moment just won't have concrete line detail in the summary,
+      // falls back to whatever autoNote/severity text is available instead.
+    }
+  }
+
+  const yourMoves = plies.filter(p => p.ply>0 && p.side===YOUR_COLOR);
+  const blunders = yourMoves.filter(p=>p.symbol==='??').length;
+  const mistakes = yourMoves.filter(p=>p.symbol==='?').length;
+  const inaccuracies = yourMoves.filter(p=>p.symbol==='?!').length;
+  const goodMoves = yourMoves.length - blunders - mistakes - inaccuracies;
+  const missedOpportunities = plies.filter(p=>p.opponentMoment && p.opponentMoment.type==='missed-opportunity').length;
+  const missedDefenses = plies.filter(p=>p.opponentMoment && p.opponentMoment.type==='missed-defense').length;
+  const punished = plies.filter(p=>p.opponentMoment && p.opponentMoment.type==='punished-opportunity').length;
+  const defended = plies.filter(p=>p.opponentMoment && p.opponentMoment.type==='defended-threat').length;
+
+  let biggest = null, biggestLossCp = -1;
+  yourMoves.forEach(p=>{
+    if(!p.symbol) return;
+    // Loss isn't stored directly on the ply — but bestSan!==san plus symbol tells us
+    // it lost something; use the ply's own cp delta vs previous as a rough magnitude
+    // for "biggest swing" sorting since exact loss isn't retained post-quick-pass.
+    const idx = p.ply, before = plies[idx-1];
+    if(!before) return;
+    const lossApprox = Math.abs(cpFromYourPerspective(before.cpWhite, YOUR_COLOR) - cpFromYourPerspective(p.cpWhite, YOUR_COLOR));
+    if(lossApprox > biggestLossCp){ biggestLossCp = lossApprox; biggest = p; }
+  });
+
+  const topMoments = keyPlies.slice().sort((a,b)=>severityRank(b)-severityRank(a)).slice(0,6)
+    .sort((a,b)=>a.ply-b.ply); // display back in game order once the top N are chosen
+
+  GAME_SUMMARY = {
+    totalYourMoves: yourMoves.length,
+    blunders, mistakes, inaccuracies, goodMoves,
+    missedOpportunities, missedDefenses, punished, defended,
+    biggestPly: biggest ? biggest.ply : null,
+    topMomentPlies: topMoments.map(p=>p.ply)
+  };
+}
+
+function momentSeverityMeta(p){
+  const isYou = p.side === YOUR_COLOR;
+  if(!isYou && p.opponentMoment){
+    if(p.opponentMoment.handled) return {cls:'sev-fine', label: p.opponentMoment.type==='punished-opportunity' ? 'Punished' : 'Defended'};
+    return {cls: p.opponentMoment.mateFound ? 'sev-blunder' : 'sev-mistake', label: p.opponentMoment.type==='missed-opportunity' ? 'Missed chance' : 'Missed defence'};
+  }
+  return severityInfo(p.symbol);
+}
+
+function renderGameSummary(){
+  const el = document.getElementById('summarySection');
+  if(!GAME_SUMMARY){ el.style.display='none'; return; }
+  const s = GAME_SUMMARY;
+  const statHtml = (num, lbl, cls) => '<div class="summary-stat '+(cls||'')+'"><div class="num">'+num+'</div><div class="lbl">'+lbl+'</div></div>';
+  let html = '<div class="panel">';
+  html += '<div class="kicker">Game rundown</div><h3>How this game went</h3>';
+  html += '<div class="summary-stats">';
+  html += statHtml(s.goodMoves, 'Solid moves', 'stat-good');
+  html += statHtml(s.inaccuracies, 'Inaccuracies', 'stat-inacc');
+  html += statHtml(s.mistakes, 'Mistakes', 'stat-mistake');
+  html += statHtml(s.blunders, 'Blunders', 'stat-blunder');
+  html += statHtml(s.punished+s.defended, 'Opponent errors handled', 'stat-good');
+  html += statHtml(s.missedOpportunities+s.missedDefenses, 'Opponent errors missed', 'stat-mistake');
+  html += '</div>';
+  const headlineBits = [];
+  if(s.blunders>0) headlineBits.push(s.blunders+' blunder'+(s.blunders>1?'s':''));
+  if(s.mistakes>0) headlineBits.push(s.mistakes+' mistake'+(s.mistakes>1?'s':''));
+  if((s.missedOpportunities+s.missedDefenses)>0) headlineBits.push((s.missedOpportunities+s.missedDefenses)+' missed opponent moment'+((s.missedOpportunities+s.missedDefenses)>1?'s':''));
+  html += '<p class="summary-headline">' + (headlineBits.length ? 'This game had '+headlineBits.join(', ')+'. The moments below are the most significant — tap any to jump straight to it on the board.' : 'A clean game — no blunders, mistakes, or missed opponent moments flagged.') + '</p>';
+  html += '</div>';
+
+  if(s.topMomentPlies.length){
+    html += '<div class="summary-moments">';
+    s.topMomentPlies.forEach(ply=>{
+      const p = GAME_DATA[ply];
+      const meta = momentSeverityMeta(p);
+      const text = (explainCache[ply] && explainCache[ply].text) || autoNote(p).note;
+      const label = p.moveNumber + (p.side==='w'?'.':'...') + p.san;
+      html += '<div class="summary-moment" data-ply="'+ply+'">'+
+        '<div class="sm-head"><span class="sm-tag '+meta.cls+'">'+meta.label+'</span><span>'+label+'</span></div>'+
+        '<div class="sm-text">'+text+'</div></div>';
+    });
+    html += '</div>';
+  }
+
+  el.innerHTML = html;
+  el.style.display = 'block';
+  el.querySelectorAll('.summary-moment').forEach(node=>{
+    node.onclick = () => { goTo(parseInt(node.dataset.ply)); document.querySelector('.board-square-outer').scrollIntoView({behavior:'smooth', block:'center'}); };
+  });
+}
+
 function startReview(){
   progressScreen.style.display = 'none';
   reviewScreen.style.display = 'block';
@@ -904,6 +1271,7 @@ function startReview(){
   refreshCoordLabels();
   buildChips();
   buildMovelist();
+  renderGameSummary();
   current = 0;
   render();
 }
@@ -1018,8 +1386,12 @@ function autoNote(p){
     const om = p.opponentMoment;
     if(om.type === 'missed-opportunity'){
       return {kicker:sideLabel+' · You missed this', title:p.san, note:'This handed you a real chance — your reply ('+(om.replyMoves[0]||'—')+') didn’t take it. See "Why?" below.'};
-    } else {
+    } else if(om.type === 'missed-defense'){
       return {kicker:sideLabel+' · You missed this', title:p.san, note:'This created a real threat against you — your reply ('+(om.replyMoves[0]||'—')+') didn’t deal with it. See "Why?" below.'};
+    } else if(om.type === 'punished-opportunity'){
+      return {kicker:sideLabel+' · Opponent blunder', title:p.san, note:'This handed you a real chance, and you took it with '+(om.replyMoves[0]||'—')+'. Well spotted — see "Why?" below.'};
+    } else { // defended-threat
+      return {kicker:sideLabel+' · Threat handled', title:p.san, note:'This created a real threat, but '+(om.replyMoves[0]||'—')+' dealt with it. See "Why?" below.'};
     }
   }
   if(!isYou) return {kicker:sideLabel+' move '+p.moveNumber, title:p.san, note:'Opponent move — nothing you needed to react to here.'};
@@ -1032,6 +1404,16 @@ function autoNote(p){
 
 function linesHtml(p){
   const isYou = p.side === YOUR_COLOR;
+  if(!isYou && p.opponentMoment && p.opponentMoment.handled){
+    // Handled case (punished-opportunity / defended-threat) — the reply WAS the
+    // right idea, so "Recommended instead" (implying it should've been different)
+    // doesn't apply here. Just show what happened.
+    const replySeq = (p.opponentMoment.replyMoves||[]).join(' ');
+    return '<div class="explain-lines">' +
+      '<div class="line-row"><span class="line-label">Their move:</span><span class="line-moves">'+p.san+'</span></div>' +
+      '<div class="line-row" style="margin-top:6px;"><span class="line-label">Your reply:</span><span class="line-moves">'+(replySeq||'—')+'</span></div>' +
+      '</div>';
+  }
   if(!isYou && p.opponentMoment){
     const replySeq = (p.opponentMoment.replyMoves||[]).join(' ');
     // playedLineSteps here is the engine's own best continuation starting right
@@ -1062,7 +1444,14 @@ function linesHtml(p){
 function renderExplainBox(p){
   const cached = explainCache[p.ply];
   const isYou = p.side === YOUR_COLOR;
-  const sev = (!isYou && p.opponentMoment) ? {cls:'sev-mistake', label: p.opponentMoment.type==='missed-opportunity' ? 'Missed chance' : 'Missed defence'} : severityInfo(p.symbol);
+  let sev;
+  if(!isYou && p.opponentMoment && p.opponentMoment.handled){
+    sev = {cls:'sev-fine', label: p.opponentMoment.type==='punished-opportunity' ? 'Punished' : 'Defended'};
+  } else if(!isYou && p.opponentMoment){
+    sev = {cls:'sev-mistake', label: p.opponentMoment.type==='missed-opportunity' ? 'Missed chance' : 'Missed defence'};
+  } else {
+    sev = severityInfo(p.symbol);
+  }
   if(cached && cached.text){
     explainBox.style.display='block';
     explainBox.innerHTML = '<div class="explain-tag '+sev.cls+'">'+sev.label+'</div>' + linesHtml(p) + '<div class="explain-text"></div>';
@@ -1102,7 +1491,18 @@ async function computeExplanation(p){
   } catch(err){
     explainCache[p.ply] = { text: 'Could not compute a detailed explanation for this position (engine data incomplete). The recommended move was ' + (p.bestSan||'—') + '.' };
   }
-  if(current===p.ply){ renderExplainBox(GAME_DATA[current]); if(btn){btn.disabled=false; btn.textContent='Why?';} }
+  if(current===p.ply){
+    renderExplainBox(GAME_DATA[current]);
+    if(btn){btn.disabled=false; btn.textContent='Why?';}
+    // ensureDeepData may have just corrected p.bestSan (see note there) — refresh the
+    // "Engine preferred: X" label too, or it would keep showing the earlier, possibly
+    // now-stale value from the initial quick pass even after the detailed line disagrees
+    // with it (confirmed 2026-08-14, Alex's game: label said Ne7, line said d6).
+    const isYouNow = p.side === YOUR_COLOR;
+    if(isYouNow && p.bestSan && p.bestSan !== p.san){
+      bestHint.textContent = 'Engine preferred: ' + p.bestSan;
+    }
+  }
 }
 
 function startPreview(p, which){
@@ -1166,7 +1566,7 @@ function render(){
   drawBoardMatrix(p.board);
   arrowSvg.querySelectorAll('line').forEach(l=>l.remove());
   const isYouNow = p.side === YOUR_COLOR;
-  const isOppMomentNow = !isYouNow && p.opponentMoment;
+  const isOppMomentNow = !isYouNow && p.opponentMoment && !p.opponentMoment.handled;
   if(p.uci){
     const isBlunderish = p.symbol==='?' || p.symbol==='??' || isOppMomentNow;
     renderArrow(p.uci, isBlunderish?'#9c3b2e':'#c9a227', 'arrowhead-played', false);
@@ -1184,6 +1584,16 @@ function render(){
   if(p.ply===0){
     moveNum.textContent='start'; moveSan.textContent='Starting position'; stampEl.style.display='none';
     bestHint.innerHTML=''; whyBtnTop.style.display='none';
+  } else if(!isYou && p.opponentMoment && p.opponentMoment.handled){
+    moveNum.textContent = p.moveNumber + (p.side==='w'?'.':'...');
+    moveSan.textContent = p.san + (p.isMate?'#':(p.isCheck?'+':''));
+    stampEl.style.display='inline-block';
+    stampEl.textContent = '✓';
+    stampEl.className = 'stamp sev-fine';
+    bestHint.textContent = p.opponentMoment.type==='punished-opportunity' ? 'Opponent blunder — you punished it. See Why?' : 'Opponent threat — you defended it. See Why?';
+    whyBtnTop.style.display='inline-block'; whyBtnTop.disabled=false; whyBtnTop.textContent='Why?';
+    whyBtnTop.className = 'why-btn sev-fine';
+    whyBtnTop.onclick = ()=>onWhyClick(p);
   } else if(!isYou && p.opponentMoment){
     moveNum.textContent = p.moveNumber + (p.side==='w'?'.':'...');
     moveSan.textContent = p.san + (p.isMate?'#':(p.isCheck?'+':''));
@@ -1265,11 +1675,12 @@ function buildMovelist(){
       const cell = document.createElement('div');
       if(p){
         const isYou = p.side === YOUR_COLOR;
-        const isOppMoment = !isYou && p.opponentMoment;
+        const isOppMoment = !isYou && p.opponentMoment && !p.opponentMoment.handled;
+        const isOppHandled = !isYou && p.opponentMoment && p.opponentMoment.handled;
         const flagged = (isYou && (p.symbol==='??'||p.symbol==='?')) || isOppMoment;
         cell.className = 'mv-cell'+(flagged ? ' sym-blunder':'');
         cell.dataset.ply=p.ply;
-        const symText = isYou ? (p.symbol||'') : (isOppMoment ? (p.opponentMoment.type==='missed-opportunity' ? '!' : '⚠') : '');
+        const symText = isYou ? (p.symbol||'') : (isOppMoment ? (p.opponentMoment.type==='missed-opportunity' ? '!' : '⚠') : (isOppHandled ? '✓' : ''));
         cell.innerHTML = '<span>'+p.san+(p.isMate?'#':p.isCheck?'+':'')+'</span>'+(symText?'<span class="sym">'+symText+'</span>':'<span></span>');
         cell.onclick = ()=>goTo(p.ply);
       }
