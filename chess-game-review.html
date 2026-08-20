@@ -823,7 +823,16 @@ async function ensureDeepData(p, depth){
     // recommended line's first move, "d6" (from this deeper pass). Fix: always
     // make bestSan/bestUci agree with whatever line we're actually showing, by
     // overwriting them from this exact PV rather than trusting the earlier value.
-    if(bl.sans.length){
+    //
+    // IMPORTANT (bug found 2026-08-20, Alex: "it recommended letting my queen be
+    // taken"): p.fenBefore is only "the position before YOUR move" when p is one of
+    // your own move plies. For an opponent-moment ply, p.fenBefore is the position
+    // before THEIR move, so infoBefore.pv[0] here is THEIR best move, not a
+    // recommendation for you. Only overwrite bestSan/bestUci for your own move plies —
+    // otherwise this silently replaces bestSan with the opponent's best move and it
+    // leaks into the main move view (the "Engine preferred: X" hint), which is exactly
+    // how a queen-hanging move could show up as a "recommendation".
+    if(bl.sans.length && p.side === YOUR_COLOR){
       p.bestSan = bl.sans[0];
       p.bestUci = infoBefore.pv[0];
     }
@@ -1164,6 +1173,11 @@ async function buildGameSummary(plies, depth, onProgress){
   for(const p of keyPlies){
     done++; onProgress(done, keyPlies.length);
     try{
+      // ensureDeepData itself now guards the bestSan/bestUci overwrite to only apply on
+      // your own move plies (fixed 2026-08-20 — see the note inside ensureDeepData for
+      // the "recommended letting my queen be taken" bug this caused when called on
+      // opponent-moment plies). Safe to call unconditionally here; it also fills in
+      // playedLineSteps for opponent plies, which the "Show on board" preview uses.
       await ensureDeepData(p, depth);
       if(!explainCache[p.ply]) explainCache[p.ply] = { text: generateExplanation(p) };
     } catch(e){
@@ -1254,7 +1268,12 @@ function renderGameSummary(){
   el.innerHTML = html;
   el.style.display = 'block';
   el.querySelectorAll('.summary-moment').forEach(node=>{
-    node.onclick = () => { goTo(parseInt(node.dataset.ply)); document.querySelector('.board-square-outer').scrollIntoView({behavior:'smooth', block:'center'}); };
+    node.onclick = () => {
+      const ply = parseInt(node.dataset.ply);
+      explainOpened[ply] = true; // clicking a rundown card is an explicit request to see that moment's detail
+      goTo(ply);
+      document.querySelector('.board-square-outer').scrollIntoView({behavior:'smooth', block:'center'});
+    };
   });
 }
 
@@ -1297,6 +1316,14 @@ const PIECE_GLYPH = {K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙',k:'♚',q:'
 let current = 0;
 let previewState = null;
 const explainCache = {};
+// Tracks which plies the user has actually clicked "Why?" for. Separate from
+// explainCache — the summary/rundown pass now pre-computes explanation TEXT for every
+// key moment up front (so the rundown has real content immediately), but that must not
+// make the explain box auto-pop-open while just stepping through moves with the nav
+// arrows. Only a ply in this set should have its explain box shown by default; cache
+// presence alone is not consent to display it. Bug found 2026-08-20 (Alex: stepping
+// through moves with the arrows was auto-opening Why? for blunders).
+const explainOpened = {};
 
 const squareEls = [];
 for(let row=0; row<8; row++){
@@ -1452,7 +1479,7 @@ function renderExplainBox(p){
   } else {
     sev = severityInfo(p.symbol);
   }
-  if(cached && cached.text){
+  if(cached && cached.text && explainOpened[p.ply]){
     explainBox.style.display='block';
     explainBox.innerHTML = '<div class="explain-tag '+sev.cls+'">'+sev.label+'</div>' + linesHtml(p) + '<div class="explain-text"></div>';
     explainBox.querySelector('.explain-text').textContent = cached.text;
@@ -1464,8 +1491,9 @@ function renderExplainBox(p){
 function scrollToExplain(){ explainBox.scrollIntoView({behavior:'smooth', block:'center'}); }
 
 function onWhyClick(p){
+  explainOpened[p.ply] = true; // explicit click — now allowed to display, incl. on future navigations back to this ply
   const cached = explainCache[p.ply];
-  if(cached && cached.text){ scrollToExplain(); return; }
+  if(cached && cached.text){ renderExplainBox(p); scrollToExplain(); return; }
   // Scroll after the explanation actually renders, not before — explainBox is
   // empty/hidden until computeExplanation finishes (async engine work), so scrolling
   // immediately had nothing to scroll to yet and often didn't end up in the right
