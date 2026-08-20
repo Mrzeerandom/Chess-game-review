@@ -132,6 +132,9 @@
   .line-row{display:flex; gap:8px; font-size:12.5px; line-height:1.5; flex-wrap:wrap;} .line-row + .line-row{margin-top:3px;}
   .line-label{font-family:'IBM Plex Mono',monospace; font-weight:700; color:#a99f8c; flex-shrink:0;}
   .line-moves{font-family:'IBM Plex Mono',monospace; color:#f5efe0;}
+  .line-move-plain{color:#f5efe0;}
+  .line-move-swing{color:#221c14; background:var(--brass); font-weight:700; padding:0 3px; border-radius:3px; cursor:help;}
+  .line-move-swing-minor{color:var(--brass); font-weight:700; border-bottom:2px solid var(--brass-soft); cursor:help;}
   .explain-text{font-size:14px; line-height:1.6; color:#f5efe0; margin-top:10px; padding-top:10px; border-top:1px dashed rgba(236,229,211,0.2); white-space:pre-wrap;}
   .explain-facts{font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:#a99f8c; margin-top:8px; line-height:1.6;}
   .movelist-wrap{margin-top:26px;}
@@ -473,6 +476,193 @@ function materialFactsStructured(fen){
   return facts;
 }
 
+/* ---------------------------------------------------------------------
+   PIN DETECTION (static, single-position)
+   A pin = a sliding piece (bishop/rook/queen) of `byColor` attacking
+   along a ray where the FIRST piece it hits is an enemy piece, and
+   directly behind that piece on the SAME ray (nothing else in between)
+   sits a second enemy piece (or king) worth more, OR the king itself.
+   The first piece is then "pinned" — moving it off the ray would expose
+   the piece/king behind it to capture.
+
+   Reuses the exact ray-walking directions from getAttackers rather than
+   writing new geometry from scratch — this is a direct extension of
+   that function's bishop/rook/queen loop, walking each ray one square
+   further past the first blocker instead of stopping there. Added
+   2026-08-20 per Alex, after he asked what pin detection would take —
+   turned out smaller than first estimated once getAttackers' ray logic
+   was available to build on directly, rather than the bigger "new
+   ray-tracing from scratch" originally scoped before that was checked.
+
+   Two pin categories: absolute (pinned to the king — chess.js already
+   refuses to make a move that would leave your own king in check, so
+   this is enforced by the rules themselves, but Alex still wants it
+   named as a pin in explanations) and relative (pinned to a more
+   valuable piece — legal to move, but generally a bad idea since it
+   exposes the more valuable piece).
+--------------------------------------------------------------------- */
+function findPinnedPieces(fen, byColor){
+  const c = new Chess(fen);
+  const boardArr = boardArrFromChess(c);
+  const oppColor = byColor==='w' ? 'b' : 'w';
+  const bishopDirs=[[1,1],[1,-1],[-1,1],[-1,-1]], rookDirs=[[1,0],[-1,0],[0,1],[0,-1]];
+  const pins = [];
+
+  for(let f=0; f<8; f++){
+    for(let r=1; r<=8; r++){
+      const cell = boardArr[8-r][f];
+      if(!cell) continue;
+      const isWhite = cell===cell.toUpperCase();
+      if((isWhite?'w':'b') !== byColor) continue;
+      const type = cell.toLowerCase();
+      if(type!=='b' && type!=='r' && type!=='q') continue; // only sliding pieces can pin
+      const dirs = type==='b'?bishopDirs:type==='r'?rookDirs:bishopDirs.concat(rookDirs);
+
+      for(const [dx,dy] of dirs){
+        let x=f+dx, y=r+dy;
+        let firstHit = null;
+        while(x>=0 && x<8 && y>=1 && y<=8){
+          const targetCell = boardArr[8-y][x];
+          if(targetCell){
+            const targetIsWhite = targetCell===targetCell.toUpperCase();
+            const targetColor = targetIsWhite ? 'w' : 'b';
+            if(!firstHit){
+              if(targetColor === oppColor){
+                firstHit = { square: rcToSquare(x,y), type: targetCell.toLowerCase(), file:x, rank:y };
+              } else {
+                break; // own piece blocks the ray immediately — no pin possible on this ray
+              }
+            } else {
+              // Second piece hit along the ray — is it worth pinning the first one against?
+              if(targetColor === oppColor){
+                const behindIsKing = targetCell.toLowerCase()==='k';
+                const behindValue = PIECE_VALUE[targetCell.toLowerCase()];
+                const pinnedValue = PIECE_VALUE[firstHit.type];
+                if(behindIsKing || behindValue > pinnedValue){
+                  pins.push({
+                    pinnerSquare: rcToSquare(f,r), pinnerPiece: type, pinnerPieceName: PIECE_NAMES[type],
+                    pinnedSquare: firstHit.square, pinnedPiece: firstHit.type, pinnedPieceName: PIECE_NAMES[firstHit.type],
+                    behindSquare: rcToSquare(x,y), behindPiece: targetCell.toLowerCase(), behindPieceName: behindIsKing?'king':PIECE_NAMES[targetCell.toLowerCase()],
+                    isAbsolute: behindIsKing
+                  });
+                }
+              }
+              break; // whether it counted as a pin or not, the ray is blocked here either way
+            }
+          }
+          x+=dx; y+=dy;
+        }
+      }
+    }
+  }
+  return pins;
+}
+
+/* ---------------------------------------------------------------------
+   FORK DETECTION (static, single-position)
+   A fork = one piece of `byColor` simultaneously attacking 2+ enemy
+   targets (pieces, or the enemy king) where the fork is "real" — not
+   just incidental. Deliberately uses getAttackers (pure geometry, works
+   on king squares too, since chess.js's legal-move-based materialFacts*
+   functions exclude the king — you can't "legally capture" a king, but
+   you absolutely can be forked with your king as one of the two
+   targets, e.g. a knight fork on king+rook, which is one of the most
+   common and highest-value fork patterns). Added 2026-08-20 per Alex.
+
+   "Real" fork criteria (kept deliberately conservative to avoid noisy
+   false positives — see the note in findForkingMoveInLine below about
+   what this does NOT catch):
+   - The attacker must be attacking 2+ distinct enemy pieces/king from
+     its square (that's the geometric definition of a fork).
+   - At least one of the forked targets must be undefended, OR the
+     attacker itself must be safe (not simply hanging to a bigger piece
+     after forking) — otherwise "forking" two defended pieces with a
+     piece that just dies next move isn't a real threat.
+   - The king counts as an always-valuable, always-"undefended" target
+     (you can't defend against check by adding a defender to the king
+     square) — a fork that includes the king is flagged as especially
+     significant (royal fork) regardless of the other target's defense.
+--------------------------------------------------------------------- */
+function findForkingAttackers(fen, byColor){
+  const c = new Chess(fen);
+  const boardArr = boardArrFromChess(c);
+  const oppColor = byColor==='w' ? 'b' : 'w';
+
+  // Locate every square occupied by an enemy piece or the enemy king.
+  const targets = [];
+  for(let row=0; row<8; row++){
+    for(let col=0; col<8; col++){
+      const cell = boardArr[row][col];
+      if(!cell) continue;
+      const isWhite = cell===cell.toUpperCase();
+      if((isWhite?'w':'b') !== oppColor) continue;
+      const type = cell.toLowerCase();
+      const file=col, rank=8-row;
+      targets.push({ square: rcToSquare(file,rank), file, rank, type, isKing: type==='k' });
+    }
+  }
+
+  // For each target, find who attacks it (geometric, includes king targets).
+  const attackersBySquare = {}; // attackerSquare -> [{targetSquare, type, isKing}]
+  targets.forEach(t=>{
+    const atks = getAttackers(boardArr, t.file, t.rank, byColor);
+    atks.forEach(a=>{
+      if(!attackersBySquare[a]) attackersBySquare[a] = [];
+      attackersBySquare[a].push(t);
+    });
+  });
+
+  const forks = [];
+  Object.keys(attackersBySquare).forEach(attackerSq=>{
+    const hitTargets = attackersBySquare[attackerSq];
+    if(hitTargets.length < 2) return; // not a fork, just a normal single attack
+
+    // Is at least one target undefended, or is the king among them (always counts)?
+    const hasKing = hitTargets.some(t=>t.isKing);
+    const anyUndefended = hitTargets.some(t=>{
+      if(t.isKing) return true;
+      const defs = getAttackers(boardArr, t.file, t.rank, oppColor);
+      return defs.length===0;
+    });
+    if(!hasKing && !anyUndefended) return; // both/all targets defended and no king involved — not a clean fork
+
+    // Is the attacker itself reasonably safe? (undefended AND attacked by something
+    // cheaper than itself would make this a bad trade, not a real fork threat)
+    const attackerCell = c.get(attackerSq);
+    if(!attackerCell) return;
+    const attackerFile = attackerSq.charCodeAt(0)-97, attackerRank = parseInt(attackerSq[1]);
+    const attackerAttackers = getAttackers(boardArr, attackerFile, attackerRank, oppColor);
+    const attackerDefenders = getAttackers(boardArr, attackerFile, attackerRank, byColor);
+    const attackerValue = PIECE_VALUE[attackerCell.type];
+    const attackerHangsForFree = attackerAttackers.length>0 && attackerDefenders.length===0;
+
+    // Cap to the two most significant targets (king + the single most valuable other
+    // piece) rather than listing every square the attacker happens to reach. A queen
+    // giving check near an exposed king often "attacks" several pieces at once as a
+    // side effect of the check itself, not because it's a deliberate multi-target
+    // fork — listing all of them ("attacks the king, bishop, knight, queen, and pawn")
+    // reads as noise, not a clean tactic. Bug found 2026-08-20 during testing: Qxf7+
+    // (a real check, not the actual mate) was described this way. Two targets is what
+    // a human means by "fork" in normal usage — keep it to that.
+    const sortedTargets = hitTargets.slice().sort((a,b)=>{
+      if(a.isKing !== b.isKing) return a.isKing ? -1 : 1; // king first if present
+      return (PIECE_VALUE[b.type]||0) - (PIECE_VALUE[a.type]||0);
+    });
+    const cappedTargets = sortedTargets.slice(0,2);
+
+    forks.push({
+      attackerSquare: attackerSq,
+      attackerPiece: attackerCell.type,
+      attackerPieceName: PIECE_NAMES[attackerCell.type],
+      targets: cappedTargets.map(t=>({square:t.square, piece:t.type, pieceName: t.isKing?'king':PIECE_NAMES[t.type], isKing:t.isKing})),
+      totalTargetsHit: hitTargets.length, // kept for reference even though targets[] is capped to 2
+      isRoyalFork: hasKing,
+      attackerHangsForFree // flagged but not excluded — a fork that wins more than the attacker is worth is still real even if the attacker also hangs after
+    });
+  });
+  return forks;
+}
+
 function materialFacts(fen){
   return materialFactsStructured(fen).map(f=>{
     const attTxt = f.attackers.map(a=>a.pieceName+' on '+a.square);
@@ -482,11 +672,18 @@ function materialFacts(fen){
   });
 }
 
-async function simulateLine(fen, pvUci, engine, evalDepth, maxPlies){
+async function simulateLine(fen, pvUci, engine, evalDepth, maxPlies, startCpWhite){
   maxPlies = maxPlies || 14;
   const c = new Chess(fen);
   const sans = [], steps = [];
-  let prevCp = null, quietCount = 0;
+  // prevCp seeds from startCpWhite when the caller has it (the eval of the position
+  // right before this line begins, from whoever's move it is there — callers already
+  // compute this via their own engine.analyse right before calling simulateLine, e.g.
+  // ensureDeepData's infoBefore/infoAfterPlayed). When not supplied (startCpWhite left
+  // undefined), falls back to the old behaviour: first step's delta is null since
+  // there's no baseline to compare against without an extra engine call.
+  let prevCp = (typeof startCpWhite === 'number') ? startCpWhite : null;
+  let quietCount = 0;
   for(let i=0; i<Math.min(maxPlies, pvUci.length); i++){
     const uci = pvUci[i];
     const from = uci.slice(0,2), to = uci.slice(2,4), promo = uci.slice(4,5) || undefined;
@@ -495,17 +692,196 @@ async function simulateLine(fen, pvUci, engine, evalDepth, maxPlies){
     const isCapture = !!moveObj.captured;
     sans.push(moveObj.san);
     const givesCheck = c.in_check();
-    steps.push({ san: moveObj.san, uci: uci, board: boardArrFromChess(c), captured: moveObj.captured || null, capturedBy: moveObj.piece });
     const info = await engine.analyse(c.fen(), evalDepth);
-    const cp = scoreToCpWhite(info.score, c.turn()==='w');
-    const stable = prevCp !== null && Math.abs(cp-prevCp) < 25;
+    const cpWhiteAfter = scoreToCpWhite(info.score, c.turn()==='w');
+    // cpDeltaWhite: how much THIS step's move shifted the eval (White's perspective)
+    // versus the position right before it. Added 2026-08-20 per Alex: he wants to see
+    // WHICH move in a shown line causes the big swing, not just stare at the line's
+    // final eval and guess. This value was already being computed transiently here for
+    // the quiet-position cutoff below and then discarded — now retained per step.
+    const cpDeltaWhite = prevCp === null ? null : (cpWhiteAfter - prevCp);
+    steps.push({ san: moveObj.san, uci: uci, board: boardArrFromChess(c), captured: moveObj.captured || null, capturedBy: moveObj.piece, cpWhiteAfter, cpDeltaWhite });
+    const stable = prevCp !== null && Math.abs(cpWhiteAfter-prevCp) < 25;
     if(stable && !isCapture && !givesCheck){
       quietCount++;
       if(quietCount>=2) break;
     } else { quietCount = 0; }
-    prevCp = cp;
+    prevCp = cpWhiteAfter;
   }
   return { sans, steps, facts: materialFacts(c.fen()), factsStructured: materialFactsStructured(c.fen()) };
+}
+
+/* ---------------------------------------------------------------------
+   FORWARD-LOOKING FORK DETECTION (move-creates-a-fork, 1-3 plies out)
+   Added 2026-08-20 per Alex: not "is there a fork on the board right
+   now" but "is there a MOVE 1-3 plies from here that WOULD create a
+   fork" — for both your missed chances and opponent incoming threats.
+
+   Deliberately does NOT brute-force every legal move at every ply (that
+   would mean calling findForkingAttackers, itself an O(squares^2)-ish
+   scan, across the full legal move list at every depth — expensive and
+   duplicates work the engine already does better). Instead this walks
+   the STEPS of an already-computed engine line (bestLineSteps for your
+   moves via ensureDeepData, or the projected line for opponent moments
+   via projectLine/annotateOpponentMoments) — i.e. it only checks moves
+   the engine itself considers part of its best continuation. That's a
+   real, honest limitation worth being upfront about: if a fork-creating
+   move exists but isn't part of the engine's own top line at the depth
+   used, this will NOT find it. It will reliably find forks that ARE
+   part of what the tool is already recommending, which is the common
+   case Alex asked for ("a move available 1-3 plies out").
+
+   `moverColor`: whose moves within the line to check for fork-creation
+   (only check moves made BY this color, skip the other side's replies
+   within the same line — a fork is created by the mover's own move).
+   `maxPlies`: how many of the line's own steps to look at (the "1-3
+   plies" window — counts plies belonging to moverColor specifically,
+   not raw line index, since the line interleaves both sides' moves).
+--------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------
+   FORK JUSTIFICATION (forced-vs-blunder distinction)
+   Added 2026-08-20 per Alex: a fork where the forking piece itself hangs
+   for free afterward isn't automatically a blunder — it can be the
+   right move if it was forced (the position was in check, or it was the
+   only legal move) or if what the fork wins outweighs what's lost when
+   the forking piece gets recaptured. Only meaningful when
+   fork.attackerHangsForFree is true; otherwise there's nothing to
+   justify (the piece isn't hanging, so no tension to resolve).
+
+   Data used:
+   - "Forced": fenBeforeMove was already in check (c.in_check() before
+     the move), or the mover had exactly one legal move at that point —
+     both cheap, exact chess.js checks, no engine call needed.
+   - "Net material": looks for the opponent's recapture of the forking
+     piece WITHIN THE SAME already-computed line (the steps immediately
+     following the fork move) rather than requesting a new engine
+     search — if the line's own continuation already shows the
+     recapture (common, since it's often the opponent's best reply and
+     therefore already part of the engine's own PV), net it against
+     what the fork itself is worth. If no recapture appears in the
+     remaining steps, this can't determine net material and reports
+     unknown rather than guessing — a real, honest limitation: a
+     recapture that happens outside the already-computed line's depth
+     won't be seen without an extra engine call, which this deliberately
+     avoids to keep cost bounded (same reasoning as findForkInLine
+     itself not brute-forcing new searches).
+--------------------------------------------------------------------- */
+function classifyForkJustification(fork, fenBeforeMove, remainingSteps){
+  if(!fork.attackerHangsForFree) return { needsJustification: false };
+
+  const cBefore = new Chess(fenBeforeMove);
+  const wasCheck = cBefore.in_check();
+  const legalMoveCount = cBefore.moves().length;
+  const wasOnlyMove = legalMoveCount === 1;
+  const forced = wasCheck || wasOnlyMove;
+
+  // Value of what the fork threatens to win: the second-most-valuable target beyond
+  // the king (the king isn't "won", it's just forced to move) — i.e. what's actually
+  // capturable as a result of the fork.
+  const capturableTargets = fork.targets.filter(t=>!t.isKing);
+  const forkGainValue = capturableTargets.length ? Math.max(...capturableTargets.map(t=>PIECE_VALUE[t.piece]||0)) : 0;
+  const attackerValue = PIECE_VALUE[fork.attackerPiece]||0;
+
+  // Does the immediately-following continuation in THIS line show the opponent
+  // recapturing the forking piece? Only checked in the next 1-2 steps — a recapture
+  // further out than that is beyond what "the forking piece hangs for free" is really
+  // describing (an immediate tactical response), and searching further risks picking
+  // up an unrelated capture.
+  let recaptureSeen = false;
+  if(remainingSteps && remainingSteps.length){
+    for(const s of remainingSteps.slice(0,2)){
+      if(s.captured && PIECE_VALUE[s.captured]===attackerValue) { recaptureSeen = true; break; }
+    }
+  }
+
+  let netMaterialKnown = false, netFavorsFork = false;
+  if(recaptureSeen){
+    netMaterialKnown = true;
+    netFavorsFork = forkGainValue > attackerValue;
+  }
+
+  return {
+    needsJustification: true,
+    forced, wasCheck, wasOnlyMove,
+    netMaterialKnown, netFavorsFork,
+    forkGainValue, attackerValue,
+    // A fork is "justified" (not a blunder) if it was forced, OR if we could confirm
+    // the net material still favors the mover even after the piece is recaptured.
+    // If neither is known/true, default to treating it as a real blunder rather than
+    // silently giving the benefit of the doubt.
+    justified: forced || (netMaterialKnown && netFavorsFork)
+  };
+}
+
+function findForkInLine(steps, fenStart, moverColor, maxPlies){
+  maxPlies = maxPlies || 3;
+  if(!steps || !steps.length) return null;
+  const c = new Chess(fenStart);
+  let moverPliesSeen = 0;
+  for(let idx=0; idx<steps.length; idx++){
+    const step = steps[idx];
+    const sideToMove = c.turn(); // side about to make THIS step's move
+    const fenBeforeThisStep = c.fen();
+    const moveObj = c.move({from: step.uci.slice(0,2), to: step.uci.slice(2,4), promotion: step.uci.slice(4,5)||undefined});
+    if(!moveObj) break;
+    if(sideToMove !== moverColor) continue; // only checking moverColor's own moves for fork-creation
+    moverPliesSeen++;
+    // Skip the fork check entirely if this move is checkmate: a mating move trivially
+    // "attacks" several squares/pieces (the king can't escape by definition), and
+    // labeling that a "fork" is misleading — it's a mate, already reported as such
+    // elsewhere (the mate check in generateExplanation/concreteConsequenceText takes
+    // priority and shouldn't be duplicated/confused with fork language). Bug found
+    // 2026-08-20 during testing: Qxf7# was reported as "a fork forking the king,
+    // bishop, knight, queen, and pawn" — technically true geometrically, meaningless
+    // and confusing as a description, since the game is already over at that point.
+    if(c.in_checkmate()) continue;
+    const forks = findForkingAttackers(c.fen(), moverColor);
+    if(forks.length){
+      // Prefer a royal fork if multiple fork candidates exist at this step — most
+      // significant / least ambiguous to explain.
+      const best = forks.find(f=>f.isRoyalFork) || forks.slice().sort((a,b)=>{
+        const aVal = a.targets.reduce((s,t)=>s+(PIECE_VALUE[t.piece]||0),0);
+        const bVal = b.targets.reduce((s,t)=>s+(PIECE_VALUE[t.piece]||0),0);
+        return bVal - aVal;
+      })[0];
+      const justification = classifyForkJustification(best, fenBeforeThisStep, steps.slice(idx+1));
+      return { ply: moverPliesSeen, san: step.san, uci: step.uci, fork: best, justification };
+    }
+    if(moverPliesSeen >= maxPlies) break;
+  }
+  return null;
+}
+
+/* ---------------------------------------------------------------------
+   FORWARD-LOOKING PIN DETECTION (move-creates-a-pin, 1-3 plies out)
+   Same pattern and same real limitation as findForkInLine (only checks
+   moves inside an already-computed engine line, does not brute-force
+   every legal move) — added 2026-08-20 per Alex, same session as fork.
+--------------------------------------------------------------------- */
+function findPinInLine(steps, fenStart, moverColor, maxPlies){
+  maxPlies = maxPlies || 3;
+  if(!steps || !steps.length) return null;
+  const c = new Chess(fenStart);
+  let moverPliesSeen = 0;
+  for(const step of steps){
+    const sideToMove = c.turn();
+    const moveObj = c.move({from: step.uci.slice(0,2), to: step.uci.slice(2,4), promotion: step.uci.slice(4,5)||undefined});
+    if(!moveObj) break;
+    if(sideToMove !== moverColor) continue;
+    moverPliesSeen++;
+    if(c.in_checkmate()) continue; // same reasoning as findForkInLine — mate supersedes tactic labeling
+    const pins = findPinnedPieces(c.fen(), moverColor);
+    if(pins.length){
+      // Prefer an absolute pin (pinned to the king) if multiple candidates exist —
+      // most significant and least ambiguous to explain, same priority logic as forks.
+      const best = pins.find(pn=>pn.isAbsolute) || pins.slice().sort((a,b)=>{
+        return (PIECE_VALUE[b.behindPiece]||0) - (PIECE_VALUE[a.behindPiece]||0);
+      })[0];
+      return { ply: moverPliesSeen, san: step.san, uci: step.uci, pin: best };
+    }
+    if(moverPliesSeen >= maxPlies) break;
+  }
+  return null;
 }
 
 let GAME_DATA = [];
@@ -631,9 +1007,9 @@ async function projectLine(fen, depth){
   if(!info.pv || !info.pv.length){
     return { projectedCpWhite: scoreToCpWhite(info.score, new Chess(fen).turn()==='w'), matePlies: null, steps: [] };
   }
-  const sim = await simulateLine(fen, info.pv, engine, Math.min(depth,10));
   const sideToMoveIsWhite = new Chess(fen).turn()==='w';
   let projectedCpWhite = scoreToCpWhite(info.score, sideToMoveIsWhite);
+  const sim = await simulateLine(fen, info.pv, engine, Math.min(depth,10), 14, projectedCpWhite);
   let matePlies = (info.score && info.score.kind==='mate') ? Math.abs(info.score.val) : null;
   // If the simulated line itself terminates in checkmate (ran out of legal replies),
   // that's an even more concrete signal than the initial search's mate score.
@@ -689,6 +1065,19 @@ async function annotateOpponentMoments(plies, depth, onProgress){
     const projection = await projectLine(afterFen, depth);
     const cpProjectedYou = cpFromYourPerspective(projection.projectedCpWhite, yourColor);
     const projectedSwing = cpProjectedYou - cpBeforeYou;
+
+    // Forward-looking fork check, both directions (added 2026-08-20 per Alex): within
+    // this same already-computed projected line, is there a move 1-3 plies out that
+    // creates a fork? Checked for YOUR moves (a fork you could play but might miss —
+    // "missed-opportunity" fork) and for THEIR moves (a fork they could play against
+    // you — "missed-defense" incoming threat). Reuses projection.steps rather than
+    // running any new engine search — see findForkInLine's own header comment for the
+    // real limitation this carries (only finds forks inside the engine's own best line).
+    const yourForkInLine = findForkInLine(projection.steps, afterFen, yourColor, YOUR_REPLY_WINDOW);
+    const theirForkInLine = findForkInLine(projection.steps, afterFen, oppColor, YOUR_REPLY_WINDOW);
+    // Same forward-looking check, for pins (added 2026-08-20 per Alex).
+    const yourPinInLine = findPinInLine(projection.steps, afterFen, yourColor, YOUR_REPLY_WINDOW);
+    const theirPinInLine = findPinInLine(projection.steps, afterFen, oppColor, YOUR_REPLY_WINDOW);
     // Use whichever swing is larger in magnitude — instant eval already catches
     // outright blunders fine; projection is there to catch what instant misses,
     // not to ever report a SMALLER threat than instant already found.
@@ -788,7 +1177,8 @@ async function annotateOpponentMoments(plies, depth, onProgress){
         handled: true,
         mateFound: mateFound, matePlies: projection.matePlies,
         projectedLineSan: projection.sans || null,
-        materialThreat: materialThreat, materialOpportunity: materialOpportunity
+        materialThreat: materialThreat, materialOpportunity: materialOpportunity,
+        yourForkInLine, theirForkInLine, yourPinInLine, theirPinInLine
       };
       oppPly.keyMoment = false; // don't clutter the blunder/mistake chip list with things you got right
     } else {
@@ -800,7 +1190,8 @@ async function annotateOpponentMoments(plies, depth, onProgress){
         handled: false,
         mateFound: mateFound, matePlies: projection.matePlies,
         projectedLineSan: projection.sans || null,
-        materialThreat: materialThreat, materialOpportunity: materialOpportunity
+        materialThreat: materialThreat, materialOpportunity: materialOpportunity,
+        yourForkInLine, theirForkInLine, yourPinInLine, theirPinInLine
       };
       oppPly.keyMoment = true; // surfaces in chips/movelist alongside your own blunders
     }
@@ -813,7 +1204,8 @@ async function ensureDeepData(p, depth){
   p.materialFactsStructured = materialFactsStructured(p.fenBefore);
   const infoBefore = await engine.analyse(p.fenBefore, depth);
   if(infoBefore.pv && infoBefore.pv.length){
-    const bl = await simulateLine(p.fenBefore, infoBefore.pv, engine, Math.min(depth,10));
+    const beforeCpWhite = scoreToCpWhite(infoBefore.score, new Chess(p.fenBefore).turn()==='w');
+    const bl = await simulateLine(p.fenBefore, infoBefore.pv, engine, Math.min(depth,10), 14, beforeCpWhite);
     p.bestLineSan = bl.sans; p.bestLineSteps = bl.steps; p.materialFactsAfterBestLine = bl.facts; p.materialFactsAfterBestLineStructured = bl.factsStructured;
     // bestSan/bestUci were originally set during runQuickPass from an EARLIER,
     // separate engine.analyse() call on this same position. Stockfish isn't
@@ -842,7 +1234,8 @@ async function ensureDeepData(p, depth){
   c2.move({from:p.uci.slice(0,2), to:p.uci.slice(2,4), promotion:p.uci.slice(4,5)||undefined});
   const infoAfterPlayed = await engine.analyse(c2.fen(), depth);
   if(infoAfterPlayed.pv && infoAfterPlayed.pv.length){
-    const pl = await simulateLine(c2.fen(), infoAfterPlayed.pv, engine, Math.min(depth,10));
+    const afterPlayedCpWhite = scoreToCpWhite(infoAfterPlayed.score, c2.turn()==='w');
+    const pl = await simulateLine(c2.fen(), infoAfterPlayed.pv, engine, Math.min(depth,10), 14, afterPlayedCpWhite);
     p.playedLineSan = pl.sans; p.playedLineSteps = pl.steps; p.materialFactsAfterPlayedLine = pl.facts; p.materialFactsAfterPlayedLineStructured = pl.factsStructured;
   } else { p.playedLineSan=[]; p.playedLineSteps=[]; p.materialFactsAfterPlayedLine=[]; p.materialFactsAfterPlayedLineStructured=[]; }
   p.lineComputed = true;
@@ -901,9 +1294,55 @@ function describeTacticFromLine(p, which){
 // Returns null if there's nothing more concrete than the swing number (falls back to
 // the existing generic templates below). Added 2026-08-20 per Alex: the swing-only
 // phrasing flagged THAT something was missed but not WHAT the actual consequence was.
+// Describes a fork found by findForkInLine in plain language, naming the tactic
+// explicitly ("a fork") rather than folding it into generic "forcing line" phrasing —
+// added 2026-08-20 per Alex, who wants tactical patterns like forks called out by name,
+// not just described as an unlabeled eval swing or line.
+function describeFork(forkHit){
+  const f = forkHit.fork;
+  const targetNames = f.targets.map(t=>t.isKing ? 'king' : t.pieceName);
+  const targetsTxt = targetNames.length===2 ? targetNames.join(' and ') : targetNames.slice(0,-1).join(', ')+', and '+targetNames[targetNames.length-1];
+  const royalNote = f.isRoyalFork ? ' (a royal fork — check, so the king must move)' : '';
+  let caveat = '';
+  // Forced-vs-blunder distinction (added 2026-08-20 per Alex): only relevant when the
+  // forking piece itself hangs for free afterward — otherwise there's nothing to
+  // caveat, so stay silent rather than add noise to every fork description.
+  const j = forkHit.justification;
+  if(j && j.needsJustification){
+    if(j.forced){
+      const why = j.wasCheck ? 'it was played in response to check' : 'it was the only legal move available';
+      caveat = ` (the ${f.attackerPieceName} is left hanging afterward, but that was forced — ${why})`;
+    } else if(j.netMaterialKnown && j.netFavorsFork){
+      caveat = ` (the ${f.attackerPieceName} gets recaptured afterward, but the fork still wins more than that costs)`;
+    } else if(j.netMaterialKnown && !j.netFavorsFork){
+      caveat = ` (worth noting: the ${f.attackerPieceName} also gets recaptured afterward, which eats into what the fork wins — worth checking whether this was actually the best choice here)`;
+    } else {
+      caveat = ` (the ${f.attackerPieceName} is left hanging afterward — worth checking whether that cost more than the fork wins)`;
+    }
+  }
+  return `a fork — ${forkHit.san} lets the ${f.attackerPieceName} on ${f.attackerSquare} attack the ${targetsTxt} at the same time${royalNote}${caveat}`;
+}
+
+// Same idea as describeFork, for pins — named explicitly per Alex. Added 2026-08-20.
+function describePin(pinHit){
+  const pn = pinHit.pin;
+  const behindTxt = pn.isAbsolute ? 'king' : pn.behindPieceName;
+  const absoluteNote = pn.isAbsolute ? ' (an absolute pin — the pinned piece legally cannot move off that line at all)' : '';
+  return `a pin — ${pinHit.san} pins the ${pn.pinnedPieceName} on ${pn.pinnedSquare} against the ${behindTxt} on ${pn.behindSquare}${absoluteNote}`;
+}
+
 function concreteConsequenceText(p, isThreatSide){
   const om = p.opponentMoment;
   const lineTxt = (om.projectedLineSan && om.projectedLineSan.length) ? om.projectedLineSan.slice(0,6).join(' ') : null;
+
+  // Fork/pin checks take priority when present — the most specific, nameable tactics,
+  // and Alex wants them called out explicitly rather than buried in generic phrasing.
+  // Fork checked first: a position that's both forked and pinned is rarer and the fork
+  // is usually the more immediately actionable/severe of the two to point out.
+  const forkHit = isThreatSide ? om.theirForkInLine : om.yourForkInLine;
+  if(forkHit) return describeFork(forkHit);
+  const pinHit = isThreatSide ? om.theirPinInLine : om.yourPinInLine;
+  if(pinHit) return describePin(pinHit);
 
   if(om.mateFound && om.matePlies !== null){
     const movesWord = om.matePlies===1 ? 'move' : 'moves';
@@ -920,7 +1359,7 @@ function concreteConsequenceText(p, isThreatSide){
     return `a free ${target.pieceName} on ${target.square}` + (lineTxt ? ` (e.g. ${lineTxt})` : '') + ` — ${whoLoses} ${belongsToYou?'were':'was'} about to lose it for nothing`;
   }
   if(lineTxt){
-    return `a forcing line (${lineTxt}) worth roughly ${Math.abs(om.swingCp/100).toFixed(1)} pawns`;
+    return `a forcing line (${lineTxt})`;
   }
   return null;
 }
@@ -930,7 +1369,9 @@ function generateOpponentMomentExplanation(p){
   const yourLabel = YOUR_COLOR==='w' ? 'White' : 'Black';
   const oppLabel = YOUR_COLOR==='w' ? 'Black' : 'White';
   const replySeq = (om.replyMoves||[]).join(' ');
-  const swingPawns = Math.abs(om.swingCp/100).toFixed(1);
+  // Pawns-swing phrasing removed per Alex (2026-08-20) — cp/pawn magnitude replaced by
+  // concrete consequence text wherever available; templates below now describe the
+  // situation qualitatively instead of citing an eval number.
 
   if(om.type === 'missed-opportunity' || om.type === 'missed-defense'){
     const consequence = concreteConsequenceText(p, om.type==='missed-defense');
@@ -945,32 +1386,32 @@ function generateOpponentMomentExplanation(p){
     const consequence = concreteConsequenceText(p, false);
     if(consequence) return `${p.san} handed you ${consequence}, and your reply (${replySeq || '—'}) took it. Well spotted.`;
     const templates = [
-      `${p.san} handed you a real chance — roughly ${swingPawns} pawns' worth — and your reply (${replySeq || '—'}) took it. Well spotted.`,
-      `${oppLabel} slipped here with ${p.san}, giving up about ${swingPawns} pawns of advantage, and you cashed it in with ${replySeq || '—'}.`,
-      `That was a genuine opening from ${p.san} (~${swingPawns} pawns), and ${replySeq || '—'} punished it correctly.`
+      `${p.san} handed you a real chance, and your reply (${replySeq || '—'}) took it. Well spotted.`,
+      `${oppLabel} slipped here with ${p.san}, giving up a genuine advantage, and you cashed it in with ${replySeq || '—'}.`,
+      `That was a real opening from ${p.san}, and ${replySeq || '—'} punished it correctly.`
     ];
     return pick(templates);
   } else if(om.type === 'defended-threat'){
     const consequence = concreteConsequenceText(p, true);
     if(consequence) return `${p.san} created ${consequence}, but your reply (${replySeq || '—'}) dealt with it properly.`;
     const templates = [
-      `${p.san} created real danger — about ${swingPawns} pawns' worth against you — but ${replySeq || '—'} dealt with it properly.`,
-      `That was a genuine threat (${p.san}, ~${swingPawns} pawns), and your reply (${replySeq || '—'}) defended it — no lasting damage.`,
+      `${p.san} created real danger, but ${replySeq || '—'} dealt with it properly.`,
+      `That was a genuine threat (${p.san}), and your reply (${replySeq || '—'}) defended it — no lasting damage.`,
       `${p.san} put real pressure on, but ${replySeq || '—'} answered it — the threat didn't stick.`
     ];
     return pick(templates);
   } else if(om.type === 'missed-opportunity'){
     const templates = [
-      `${p.san} shifted the position roughly ${swingPawns} pawns in your favour — a real chance. Your reply (${replySeq || '—'}) didn't hold onto that swing, so most of it slipped away over the next few moves.`,
-      `After ${p.san}, the position opened up in your favour by about ${swingPawns} pawns' worth of advantage. What followed (${replySeq || '—'}) didn't capitalise on it — worth going back and asking what would have kept that advantage.`,
-      `${p.san} handed ${yourLabel} an opening — roughly ${swingPawns} pawns of swing. Your next moves (${replySeq || '—'}) let it fade rather than pressing it.`
+      `${p.san} shifted the position in your favour — a real chance. Your reply (${replySeq || '—'}) didn't hold onto that, so most of it slipped away over the next few moves.`,
+      `After ${p.san}, the position opened up in your favour. What followed (${replySeq || '—'}) didn't capitalise on it — worth going back and asking what would have kept that advantage.`,
+      `${p.san} handed ${yourLabel} an opening. Your next moves (${replySeq || '—'}) let it fade rather than pressing it.`
     ];
     return pick(templates);
   } else {
     const templates = [
-      `${p.san} created real danger — the position swung about ${swingPawns} pawns against you. Your reply (${replySeq || '—'}) didn't fully deal with that threat, and the position stayed worse for it.`,
-      `That move (${p.san}) was a genuine threat, costing roughly ${swingPawns} pawns of evaluation. What followed (${replySeq || '—'}) didn't neutralise it — worth working out what defence was actually needed here.`,
-      `${p.san} put real pressure on — around ${swingPawns} pawns' swing against ${yourLabel}. Your next moves (${replySeq || '—'}) didn't fully answer it.`
+      `${p.san} created real danger — the position swung against you. Your reply (${replySeq || '—'}) didn't fully deal with that threat, and the position stayed worse for it.`,
+      `That move (${p.san}) was a genuine threat. What followed (${replySeq || '—'}) didn't neutralise it — worth working out what defence was actually needed here.`,
+      `${p.san} put real pressure on ${yourLabel}. Your next moves (${replySeq || '—'}) didn't fully answer it.`
     ];
     return pick(templates);
   }
@@ -1007,6 +1448,31 @@ function generateExplanation(p){
   if(bestLeadsToMate){
     const line = (p.bestLineSan||[]).slice(0,6).join(' ');
     return `You missed a forced mate: ${p.bestSan}${line ? ' ('+line+')' : ''} forces checkmate. ${p.san} lets ${oppLabel} escape.`;
+  }
+
+  // 0.5) Fork check (added 2026-08-20 per Alex): within the recommended line
+  // (bestLineSteps), is there a fork YOU could have played 1-3 plies out that the
+  // played move missed? Within the line that follows your actual played move
+  // (playedLineSteps), does it walk into a fork the OPPONENT can play against you?
+  // Same findForkInLine machinery used for opponent moments, just applied to your own
+  // move's lines instead of the post-opponent-move projection.
+  const missedForkByYou = findForkInLine(p.bestLineSteps, p.fenBefore, p.side, 3);
+  if(missedForkByYou){
+    return `You missed ${describeFork(missedForkByYou)}. ${p.bestSan} set that up; ${p.san} doesn't.`;
+  }
+  const forkAgainstYou = findForkInLine(p.playedLineSteps, playedFen, opp, 3);
+  if(forkAgainstYou){
+    return `${p.san} allows ${describeFork(forkAgainstYou)} against ${sideLabel} — ${p.bestSan} avoided giving ${oppLabel} that chance.`;
+  }
+
+  // 0.6) Same as above, for pins (added 2026-08-20 per Alex).
+  const missedPinByYou = findPinInLine(p.bestLineSteps, p.fenBefore, p.side, 3);
+  if(missedPinByYou){
+    return `You missed ${describePin(missedPinByYou)}. ${p.bestSan} set that up; ${p.san} doesn't.`;
+  }
+  const pinAgainstYou = findPinInLine(p.playedLineSteps, playedFen, opp, 3);
+  if(pinAgainstYou){
+    return `${p.san} allows ${describePin(pinAgainstYou)} against ${sideLabel} — ${p.bestSan} avoided giving ${oppLabel} that chance.`;
   }
 
   // 1) Did the played move hang something the recommended move didn't?
@@ -1208,23 +1674,36 @@ async function buildGameSummary(plies, depth, onProgress){
     if(lossApprox > biggestLossCp){ biggestLossCp = lossApprox; biggest = p; }
   });
 
-  const topMoments = keyPlies.slice().sort((a,b)=>severityRank(b)-severityRank(a)).slice(0,6)
-    .sort((a,b)=>a.ply-b.ply); // display back in game order once the top N are chosen
+  // Split by whose move it was, per Alex (2026-08-20): previously this was one merged,
+  // severity-ranked list capped at 6, mixing your own mistakes with opponent moments
+  // with no clear separation. Now: two full lists, not capped, one per side, so every
+  // flagged moment for both you and your opponent gets shown with its explanation —
+  // not just a curated top few. Kept in game order within each list (not re-ranked)
+  // so they read like a timeline of that side's moments.
+  const yourMomentPlies = keyPlies.filter(p => p.side === YOUR_COLOR).map(p=>p.ply);
+  const opponentMomentPlies = keyPlies.filter(p => p.side !== YOUR_COLOR).map(p=>p.ply);
 
   GAME_SUMMARY = {
     totalYourMoves: yourMoves.length,
     blunders, mistakes, inaccuracies, goodMoves,
     missedOpportunities, missedDefenses, punished, defended,
     biggestPly: biggest ? biggest.ply : null,
-    topMomentPlies: topMoments.map(p=>p.ply)
+    yourMomentPlies, opponentMomentPlies
   };
 }
 
 function momentSeverityMeta(p){
   const isYou = p.side === YOUR_COLOR;
   if(!isYou && p.opponentMoment){
-    if(p.opponentMoment.handled) return {cls:'sev-fine', label: p.opponentMoment.type==='punished-opportunity' ? 'Punished' : 'Defended'};
-    return {cls: p.opponentMoment.mateFound ? 'sev-blunder' : 'sev-mistake', label: p.opponentMoment.type==='missed-opportunity' ? 'Missed chance' : 'Missed defence'};
+    const om = p.opponentMoment;
+    if(om.handled) return {cls:'sev-fine', label: om.type==='punished-opportunity' ? 'Punished' : 'Defended'};
+    // Fork/pin get their own labels — called out by name per Alex, not folded into
+    // the generic "Missed chance"/"Missed defence" wording.
+    const forkHit = om.type==='missed-opportunity' ? om.yourForkInLine : om.theirForkInLine;
+    if(forkHit) return {cls:'sev-blunder', label: forkHit.fork.isRoyalFork ? 'Missed royal fork' : 'Missed fork'};
+    const pinHit = om.type==='missed-opportunity' ? om.yourPinInLine : om.theirPinInLine;
+    if(pinHit) return {cls:'sev-mistake', label: pinHit.pin.isAbsolute ? 'Missed absolute pin' : 'Missed pin'};
+    return {cls: om.mateFound ? 'sev-blunder' : 'sev-mistake', label: om.type==='missed-opportunity' ? 'Missed chance' : 'Missed defence'};
   }
   return severityInfo(p.symbol);
 }
@@ -1251,18 +1730,31 @@ function renderGameSummary(){
   html += '<p class="summary-headline">' + (headlineBits.length ? 'This game had '+headlineBits.join(', ')+'. The moments below are the most significant — tap any to jump straight to it on the board.' : 'A clean game — no blunders, mistakes, or missed opponent moments flagged.') + '</p>';
   html += '</div>';
 
-  if(s.topMomentPlies.length){
-    html += '<div class="summary-moments">';
-    s.topMomentPlies.forEach(ply=>{
+  const renderMomentList = (plyList) => {
+    let listHtml = '<div class="summary-moments">';
+    plyList.forEach(ply=>{
       const p = GAME_DATA[ply];
       const meta = momentSeverityMeta(p);
       const text = (explainCache[ply] && explainCache[ply].text) || autoNote(p).note;
       const label = p.moveNumber + (p.side==='w'?'.':'...') + p.san;
-      html += '<div class="summary-moment" data-ply="'+ply+'">'+
+      listHtml += '<div class="summary-moment" data-ply="'+ply+'">'+
         '<div class="sm-head"><span class="sm-tag '+meta.cls+'">'+meta.label+'</span><span>'+label+'</span></div>'+
         '<div class="sm-text">'+text+'</div></div>';
     });
-    html += '</div>';
+    listHtml += '</div>';
+    return listHtml;
+  };
+
+  const yourLabel = YOUR_COLOR==='w' ? 'White' : 'Black';
+  const oppLabel = YOUR_COLOR==='w' ? 'Black' : 'White';
+
+  if(s.yourMomentPlies.length){
+    html += '<div class="section-title" style="margin-top:20px;">Your moments ('+yourLabel+')</div>';
+    html += renderMomentList(s.yourMomentPlies);
+  }
+  if(s.opponentMomentPlies.length){
+    html += '<div class="section-title" style="margin-top:20px;">Opponent moments ('+oppLabel+')</div>';
+    html += renderMomentList(s.opponentMomentPlies);
   }
 
   el.innerHTML = html;
@@ -1429,6 +1921,60 @@ function autoNote(p){
   return {kicker:sideLabel+' move '+p.moveNumber, title:p.san, note:'A solid, reasonable move.'};
 }
 
+// Renders a line's SAN sequence as text, but marks the ONE step within it that has
+// the biggest eval swing (|cpDeltaWhite|) with a highlight span — added 2026-08-20 per
+// Alex: with a multi-move recommended line, it wasn't visible which specific move in
+// the sequence actually causes the swing versus which moves are just "the follow-up"
+// with little further change. Reuses cpDeltaWhite, now retained per step by
+// simulateLine (previously computed transiently there and discarded). Falls back to
+// plain, unhighlighted text if steps/deltas aren't available (e.g. bestSan only, no
+// full line) — never blocks rendering on missing data.
+// Threshold for "this move's swing is worth calling out" — kept as one named constant
+// so the number and its plain-language description can't drift apart. 50cp is roughly
+// half a pawn's worth of advantage/disadvantage on the engine's own scale (100cp = 1
+// pawn) — concrete enough to picture even without reading centipawns day to day: it's
+// the rough size of "one side's position got noticeably better/worse," not just normal
+// back-and-forth jostling within a line.
+const SWING_HIGHLIGHT_THRESHOLD_CP = 50;
+function describeSwingMagnitude(absCp){
+  const pawns = absCp/100;
+  if(absCp >= 90000) return 'leads to forced mate';
+  if(pawns >= 3) return '~'+pawns.toFixed(1)+' pawns — a major swing, roughly a minor piece\'s worth';
+  if(pawns >= 1) return '~'+pawns.toFixed(1)+' pawns — about a pawn\'s worth of advantage';
+  return '~'+pawns.toFixed(1)+' pawns — a smaller but still real shift, around half a pawn or more';
+}
+
+// Highlights EVERY move in the line whose swing crosses SWING_HIGHLIGHT_THRESHOLD_CP,
+// not just the single biggest one (changed 2026-08-20 per Alex — a line can have more
+// than one meaningful turning point, and only marking the max hid the others). The
+// biggest swing in the line still gets a visually stronger mark so it reads as "the
+// main one" at a glance, while other above-threshold moves get a lighter mark rather
+// than being lost entirely. Moves under threshold stay plain, so this still avoids
+// flagging ordinary move-to-move jostling as if it mattered.
+function lineTextWithSwingHighlight(steps, leadingSan){
+  const parts = [];
+  if(leadingSan) parts.push('<span class="line-move-plain">'+leadingSan+'</span>');
+  if(!steps || !steps.length) return parts.join(' ');
+  let biggestIdx = -1, biggestAbs = -1;
+  steps.forEach((s,i)=>{
+    if(typeof s.cpDeltaWhite === 'number' && Math.abs(s.cpDeltaWhite) > biggestAbs){
+      biggestAbs = Math.abs(s.cpDeltaWhite); biggestIdx = i;
+    }
+  });
+  steps.forEach((s,i)=>{
+    const abs = typeof s.cpDeltaWhite === 'number' ? Math.abs(s.cpDeltaWhite) : -1;
+    const overThreshold = abs >= SWING_HIGHLIGHT_THRESHOLD_CP;
+    if(overThreshold && i===biggestIdx){
+      parts.push('<span class="line-move-swing" title="Biggest shift in this line: '+describeSwingMagnitude(abs)+'">'+s.san+'</span>');
+    } else if(overThreshold){
+      parts.push('<span class="line-move-swing-minor" title="Meaningful shift here too: '+describeSwingMagnitude(abs)+'">'+s.san+'</span>');
+    } else {
+      parts.push('<span class="line-move-plain">'+s.san+'</span>');
+    }
+  });
+  return parts.join(' ');
+}
+
 function linesHtml(p){
   const isYou = p.side === YOUR_COLOR;
   if(!isYou && p.opponentMoment && p.opponentMoment.handled){
@@ -1447,7 +1993,7 @@ function linesHtml(p){
     // after their move (i.e. what YOU should have played and how the engine
     // continues it) — computed by ensureDeepData same as for your own moves.
     // Previously this branch never showed it at all (fixed 2026-08-13).
-    const recommendedTxt = (p.playedLineSan && p.playedLineSan.length) ? p.playedLineSan.join(' ') : (p.bestSan||'—');
+    const recommendedTxt = (p.playedLineSan && p.playedLineSan.length) ? lineTextWithSwingHighlight(p.playedLineSteps) : (p.bestSan||'—');
     const canRecommended = p.playedLineSteps && p.playedLineSteps.length;
     return '<div class="explain-lines">' +
       '<div class="line-row"><span class="line-label">Their move:</span><span class="line-moves">'+p.san+'</span></div>' +
@@ -1456,8 +2002,8 @@ function linesHtml(p){
       (canRecommended ? '<button class="preview-trigger" data-ply="'+p.ply+'" data-which="played">▶ Show on board</button>' : '') +
       '</div>';
   }
-  const bestTxt = (p.bestLineSan && p.bestLineSan.length) ? p.bestLineSan.join(' ') : p.bestSan;
-  const playedTxt = (p.playedLineSan && p.playedLineSan.length) ? (p.san+' '+p.playedLineSan.join(' ')) : p.san;
+  const bestTxt = (p.bestLineSan && p.bestLineSan.length) ? lineTextWithSwingHighlight(p.bestLineSteps) : p.bestSan;
+  const playedTxt = (p.playedLineSan && p.playedLineSan.length) ? lineTextWithSwingHighlight(p.playedLineSteps, p.san) : p.san;
   const canBest = p.bestLineSteps && p.bestLineSteps.length;
   const canPlayed = p.playedLineSteps && p.playedLineSteps.length;
   return '<div class="explain-lines">' +
